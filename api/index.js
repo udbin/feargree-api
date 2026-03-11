@@ -156,12 +156,24 @@ async function fetchKRFearGreed() {
       fetchKISIndex(token, '1001'), // KOSDAQ
     ]);
 
-    // VKOSPI는 Yahoo Finance로 별도 조회
+    // VKOSPI — KIS API로 직접 조회 (코드: 1003)
     let vkospiVal = 20;
     try {
-      const vk = await fetchYahoo('^VKOSPI');
-      vkospiVal = (vk.price > 5 && vk.price < 100) ? vk.price : 20;
-    } catch(e) { console.warn('VKOSPI Yahoo 실패, 기본값 사용'); }
+      const vkospi = await fetchKISIndex(token, '1003'); // VKOSPI 코드
+      vkospiVal = (vkospi.price > 5 && vkospi.price < 150) ? vkospi.price : 20;
+    } catch(e) {
+      console.warn('VKOSPI KIS 실패, Yahoo 시도:', e.message);
+      try {
+        const vk = await fetchYahoo('^VKOSPI');
+        vkospiVal = (vk.price > 5 && vk.price < 150) ? vk.price : 20;
+      } catch(e2) { console.warn('VKOSPI Yahoo도 실패, VIX 기반 추정'); 
+        // VIX 기반으로 VKOSPI 추정 (상관계수 약 0.85)
+        try {
+          const vix = await fetchYahoo('^VIX');
+          vkospiVal = Math.min(150, vix.price * 1.4); // VKOSPI는 VIX보다 약 40% 높은 경향
+        } catch(e3) { vkospiVal = 25; }
+      }
+    }
 
     console.log(`KOSPI: ${kospi.price} (${kospi.changePercent.toFixed(2)}%)`);
     console.log(`KOSDAQ: ${kosdaq.price} (${kosdaq.changePercent.toFixed(2)}%)`);
@@ -170,7 +182,8 @@ async function fetchKRFearGreed() {
     const momentum   = normalize(kospi.changePercent, -4, 4);
     const strength   = normalize((kospi.changePercent + kosdaq.changePercent) / 2, -4, 4);
     const breadth    = normalize(kosdaq.changePercent - kospi.changePercent, -3, 3);
-    const volatility = Math.max(0, Math.min(100, 100 - (vkospiVal - 10) * 4));
+    // VKOSPI 정상범위 10~40, 공포구간 40~80, 극단공포 80+
+    const volatility = Math.max(0, Math.min(100, 100 - (vkospiVal - 10) * 1.2));
     const safeHaven  = normalize(-kospi.changePercent, -4, 4);
     const trend      = kospi.changePercent > 0
       ? Math.min(100, 55 + kospi.changePercent * 5)
