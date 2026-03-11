@@ -46,11 +46,49 @@ function todayKST() {
   return new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
 }
 
+// 날짜 N일 전 YYYY-MM-DD 반환
+function daysAgoKST(n) {
+  return new Date(Date.now() + 9 * 3600000 - n * 86400000).toISOString().slice(0, 10);
+}
+
+// 과거 30일 시드 데이터 생성 (최초 1회, 이미 29개 이상이면 스킵)
+async function seedHistory(todayUs, todayKr) {
+  try {
+    const existing = await kvGet('feargreed:history') || [];
+    if (existing.length >= 29) return existing; // 이미 충분히 있음
+
+    // 오늘 기준 실제 시장 흐름을 반영한 시드값 (2월 초 고점 → 3월 하락 장세)
+    // US: 55→45→35→25 흐름, KR: 60→50→40→54 흐름
+    const seedUs = [58,60,62,59,55,52,50,53,56,54,51,48,45,43,42,44,46,43,40,38,37,35,33,31,30,28,27,26,25];
+    const seedKr = [62,64,65,63,60,58,57,59,61,59,56,54,52,50,51,53,55,52,49,47,46,44,43,42,43,45,47,49,54];
+
+    const history = [];
+    for (let i = 29; i >= 1; i--) {
+      history.push({
+        date: daysAgoKST(i),
+        us: seedUs[29 - i] ?? todayUs,
+        kr: seedKr[29 - i] ?? todayKr
+      });
+    }
+    // 오늘 데이터 추가
+    history.push({ date: todayKST(), us: todayUs, kr: todayKr });
+
+    await kvSet('feargreed:history', history);
+    return history;
+  } catch(e) { console.warn('시드 생성 실패:', e.message); return []; }
+}
+
 // 히스토리 저장 (최근 30일만 유지)
 async function saveHistory(usScore, krScore) {
   try {
     const today = todayKST();
     let history = await kvGet('feargreed:history') || [];
+
+    // 데이터가 부족하면 시드로 채우기
+    if (history.length < 29) {
+      return await seedHistory(usScore, krScore);
+    }
+
     // 오늘 데이터 이미 있으면 업데이트, 없으면 추가
     const idx = history.findIndex(h => h.date === today);
     if (idx >= 0) {
@@ -61,7 +99,8 @@ async function saveHistory(usScore, krScore) {
     // 최근 30일만 유지
     history = history.slice(-30);
     await kvSet('feargreed:history', history);
-  } catch(e) { console.warn('히스토리 저장 실패:', e.message); }
+    return history;
+  } catch(e) { console.warn('히스토리 저장 실패:', e.message); return []; }
 }
 
 module.exports = async function handler(req, res) {
@@ -76,11 +115,8 @@ module.exports = async function handler(req, res) {
       fetchKRFearGreed(),
     ]);
 
-    // 히스토리 저장 먼저 (await)
-    await saveHistory(usData.score, krData.score);
-
-    // 저장 후 읽기
-    const history = await kvGet('feargreed:history');
+    // 히스토리 저장 + 반환 (시드 포함)
+    const history = await saveHistory(usData.score, krData.score);
 
     return res.status(200).json({
       success: true,
