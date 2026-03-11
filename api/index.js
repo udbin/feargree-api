@@ -1,6 +1,6 @@
 // api/index.js - Vercel Serverless Function
 // 미국: CNN Fear & Greed Index
-// 한국: 네이버 금융 + Yahoo Finance
+// 한국: Yahoo Finance (KS11, KQ11, VKOSPI)
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -75,23 +75,28 @@ async function fetchUSFallback() {
 }
 
 // ─────────────────────────────────────────────
-// 한국: 네이버 금융 크롤링
+// 한국: Yahoo Finance (여러 엔드포인트 시도)
 // ─────────────────────────────────────────────
 async function fetchKRFearGreed() {
   try {
-    // 네이버 금융에서 KOSPI, KOSDAQ, VKOSPI 동시 조회
     const [kospi, kosdaq, vkospi] = await Promise.all([
-      fetchNaver('KOSPI'),
-      fetchNaver('KOSDAQ'),
-      fetchNaverVkospi()
+      fetchYahooKR('^KS11'),
+      fetchYahooKR('^KQ11'),
+      fetchYahooKR('^VKOSPI')
     ]);
 
-    console.log('KOSPI:', kospi, 'KOSDAQ:', kosdaq, 'VKOSPI:', vkospi);
+    console.log(`KOSPI: ${kospi.price} (${kospi.changePercent.toFixed(2)}%)`);
+    console.log(`KOSDAQ: ${kosdaq.price} (${kosdaq.changePercent.toFixed(2)}%)`);
+    console.log(`VKOSPI: ${vkospi.price}`);
+
+    // VKOSPI 정상 범위 체크 (보통 10~50)
+    const vkospiVal = (vkospi.price > 5 && vkospi.price < 100) ? vkospi.price : 20;
 
     const momentum   = normalize(kospi.changePercent, -4, 4);
     const strength   = normalize((kospi.changePercent + kosdaq.changePercent) / 2, -4, 4);
     const breadth    = normalize(kosdaq.changePercent - kospi.changePercent, -3, 3);
-    const volatility = vkospi > 0 ? Math.max(0, Math.min(100, 100 - (vkospi - 12) * 3)) : 50;
+    // VKOSPI: 낮을수록 탐욕 (10=극단탐욕, 20=중립, 40=극단공포)
+    const volatility = Math.max(0, Math.min(100, 100 - (vkospiVal - 10) * 4));
     const safeHaven  = normalize(-kospi.changePercent, -4, 4);
     const trend      = kospi.changePercent > 0
       ? Math.min(100, 55 + kospi.changePercent * 5)
@@ -114,101 +119,80 @@ async function fetchKRFearGreed() {
 
     return {
       score, label: getLabel(score),
-      kospi_price: kospi.price,
+      kospi_price: kospi.price.toFixed(2),
       kospi_change: kospi.changePercent.toFixed(2),
       kosdaq_change: kosdaq.changePercent.toFixed(2),
-      vkospi: vkospi.toFixed(2),
+      vkospi: vkospiVal.toFixed(2),
       indicators,
-      source: '네이버 금융 실시간'
+      source: 'Yahoo Finance 실시간'
     };
   } catch (e) {
-    console.error('한국 데이터 오류:', e.message);
-    // Yahoo Finance fallback
-    return await fetchKRFallback();
-  }
-}
-
-// 네이버 금융 지수 조회
-async function fetchNaver(index) {
-  const symbolMap = { 'KOSPI': 'KOSPI', 'KOSDAQ': 'KOSDAQ' };
-  const url = `https://finance.naver.com/sise/sise_index.naver?code=${index}`;
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'ko-KR,ko;q=0.9',
-      'Referer': 'https://finance.naver.com'
-    }
-  });
-  if (!res.ok) throw new Error(`네이버 ${index}: ${res.status}`);
-  const html = await res.text();
-
-  // 현재가 추출
-  const priceMatch = html.match(/id="now_value"[^>]*>([0-9,]+\.?[0-9]*)/);
-  const changeMatch = html.match(/id="change_value"[^>]*>([0-9,]+\.?[0-9]*)/);
-  const signMatch = html.match(/class="[^"]*(?:quote_plus|quote_minus)[^"]*"[^>]*>\s*([▲▼])/);
-
-  if (!priceMatch) throw new Error(`${index} 가격 파싱 실패`);
-
-  const price = parseFloat(priceMatch[1].replace(/,/g, ''));
-  const changeVal = changeMatch ? parseFloat(changeMatch[1].replace(/,/g, '')) : 0;
-  const sign = html.includes('quote_plus') ? 1 : -1;
-  const prevPrice = price - (sign * changeVal);
-  const changePercent = prevPrice > 0 ? (sign * changeVal / prevPrice) * 100 : 0;
-
-  return { price, changeVal: sign * changeVal, changePercent };
-}
-
-// VKOSPI 조회 (네이버 금융)
-async function fetchNaverVkospi() {
-  try {
-    // VKOSPI는 네이버에서 직접 조회
-    const url = 'https://finance.naver.com/sise/sise_index.naver?code=VKOSPI';
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html', 'Referer': 'https://finance.naver.com' }
-    });
-    if (!res.ok) throw new Error('VKOSPI 실패');
-    const html = await res.text();
-    const match = html.match(/id="now_value"[^>]*>([0-9]+\.?[0-9]*)/);
-    return match ? parseFloat(match[1]) : 20;
-  } catch (e) {
-    return 20; // 기본값
-  }
-}
-
-async function fetchKRFallback() {
-  try {
-    const [kospi, kosdaq] = await Promise.all([fetchYahoo('^KS11'), fetchYahoo('^KQ11')]);
-    const momentum = normalize(kospi.changePercent, -4, 4);
-    const strength = normalize((kospi.changePercent + kosdaq.changePercent) / 2, -4, 4);
-    const score = Math.round((momentum + strength) / 2);
+    console.error('KR 오류:', e.message);
     return {
-      score: Math.max(0, Math.min(100, score)),
-      label: getLabel(score),
-      kospi_change: kospi.changePercent.toFixed(2),
-      indicators: [
-        { name: '시장 모멘텀', value: Math.round(momentum) },
-        { name: '주가 강도', value: Math.round(strength) },
-        { name: '주가 폭 (KOSDAQ)', value: Math.round(normalize(kosdaq.changePercent, -4, 4)) },
-        { name: '변동성 (VKOSPI)', value: 50 },
-        { name: '안전자산 수요', value: Math.round(normalize(-kospi.changePercent, -4, 4)) },
-        { name: '추세 강도', value: kospi.changePercent > 0 ? 60 : 40 },
-        { name: '종합 심리', value: score }
-      ],
-      source: 'Yahoo Finance (대체)'
+      score: 45, label: '중립',
+      indicators: Array(7).fill(0).map((_, i) => ({
+        name: ['시장 모멘텀','주가 강도','주가 폭','변동성','안전자산','추세','심리'][i],
+        value: 45
+      })),
+      source: '로딩 실패: ' + e.message
     };
-  } catch (e) {
-    return { score: 40, label: '공포', indicators: Array(7).fill(0).map((_, i) => ({ name: ['시장 모멘텀','주가 강도','주가 폭','변동성','안전자산','추세','심리'][i], value: 40 })), source: '로딩 실패' };
   }
+}
+
+// Yahoo Finance - 여러 엔드포인트 시도
+async function fetchYahooKR(symbol) {
+  const encoded = encodeURIComponent(symbol);
+
+  // v8 엔드포인트 먼저 시도
+  try {
+    const res = await fetch(
+      `https://query2.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=5d&includePrePost=false`,
+      { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0', 'Accept': 'application/json', 'Accept-Language': 'en-US,en;q=0.9' } }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const result = data.chart?.result?.[0];
+      if (result) {
+        const meta = result.meta;
+        const price = meta.regularMarketPrice || meta.previousClose || 0;
+        const prevClose = meta.chartPreviousClose || meta.previousClose || price;
+        const changePercent = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
+        return { symbol, price, prevClose, changePercent };
+      }
+    }
+  } catch (e) { console.warn(`v8 실패 ${symbol}:`, e.message); }
+
+  // v7 엔드포인트 시도
+  try {
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encoded}`,
+      { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const quote = data.quoteResponse?.result?.[0];
+      if (quote) {
+        return {
+          symbol,
+          price: quote.regularMarketPrice || 0,
+          prevClose: quote.regularMarketPreviousClose || 0,
+          changePercent: quote.regularMarketChangePercent || 0
+        };
+      }
+    }
+  } catch (e) { console.warn(`v7 실패 ${symbol}:`, e.message); }
+
+  throw new Error(`${symbol} 데이터 조회 실패`);
 }
 
 // ─────────────────────────────────────────────
-// Yahoo Finance 공통
+// Yahoo Finance 미국용 (기존)
 // ─────────────────────────────────────────────
 async function fetchYahoo(symbol) {
-  const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2d`, {
-    headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
-  });
+  const res = await fetch(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2d`,
+    { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } }
+  );
   if (!res.ok) throw new Error(`Yahoo ${symbol}: ${res.status}`);
   const data = await res.json();
   const meta = data.chart.result[0].meta;
@@ -229,5 +213,3 @@ function getLabel(score) {
   if (score < 75) return '탐욕';
   return '극단적 탐욕';
 }
-
-
