@@ -28,16 +28,22 @@ module.exports = async function handler(req, res) {
 // ─────────────────────────────────────────────
 async function fetchUSFearGreed() {
   try {
-    // alternative.me — CNN Fear & Greed 미러 API (서버 차단 없음)
-    const response = await fetch('https://api.alternative.me/fng/?limit=2', {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+    // CNN previous_close 엔드포인트 — 전일 종가 기준 공식 지수
+    const response = await fetch('https://production.dataviz.cnn.io/index/fearandgreed/graphdata/previous_close', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Referer': 'https://www.cnn.com/markets/fear-and-greed',
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Origin': 'https://www.cnn.com'
+      }
     });
-    if (!response.ok) throw new Error(`alternative.me ${response.status}`);
+    if (!response.ok) throw new Error(`CNN previous_close ${response.status}`);
     const data = await response.json();
-    const today = data.data[0];
-    const prev  = data.data[1] || today;
-    const s  = parseInt(today.value);
-    const sp = parseInt(prev.value);
+    const fg = data.fear_and_greed;
+    const s  = Math.round(fg.score);
+    const sp = Math.round(fg.previous_close || s);
+    const sw = Math.round(fg.previous_1_week || s);
 
     // VIX로 세부 지표 보완
     let vixScore = 50;
@@ -50,7 +56,7 @@ async function fetchUSFearGreed() {
       score: s,
       label: getLabel(s),
       previous_close: sp,
-      previous_1_week: sp,
+      previous_1_week: sw,
       indicators: [
         { name: '시장 모멘텀',   value: Math.min(100, Math.round(s * 1.05)) },
         { name: '변동성 (VIX)', value: Math.round(vixScore) },
@@ -60,10 +66,10 @@ async function fetchUSFearGreed() {
         { name: '주가 강도',    value: Math.min(100, Math.round(s * 1.05)) },
         { name: '주가 폭',      value: Math.round(s * 0.95) }
       ],
-      source: 'CNN Fear & Greed Index (alternative.me)'
+      source: 'CNN Fear & Greed Index'
     };
   } catch (e) {
-    console.warn('alternative.me 실패:', e.message);
+    console.warn('CNN previous_close 실패:', e.message);
     return await fetchUSFallback();
   }
 }
