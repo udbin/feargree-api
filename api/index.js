@@ -184,12 +184,12 @@ async function fetchKRFearGreed() {
     const sentiment  = (momentum + volatility) / 2;
 
     const indicators = [
-      { name: '시장 모멘텀', value: Math.round(momentum), raw: parseFloat(kospi.changePercent.toFixed(2)),                               unit: '%', barMax: 5  },
+      { name: 'KOSPI 등락률', value: Math.round(momentum), raw: parseFloat(kospi.changePercent.toFixed(2)),                               unit: '%', barMax: 5  },
       { name: '주가 강도',   value: Math.round(strength), raw: parseFloat(((kospi.changePercent + kosdaq.changePercent) / 2).toFixed(2)), unit: '%', barMax: 5  },
       { name: '주가 폭 (KOSDAQ)', value: Math.round(breadth), raw: parseFloat(kosdaq.changePercent.toFixed(2)),                          unit: '%', barMax: 5  },
       { name: '변동성 (VKOSPI)', value: Math.round(volatility), raw: parseFloat(vkospiVal.toFixed(1)),                                   unit: '',  barMax: 80 },
       { name: '안전자산 수요', value: Math.round(safeHaven), raw: parseFloat((-kospi.changePercent).toFixed(2)),                         unit: '%', barMax: 5  },
-      { name: '추세 강도',   value: Math.round(trend), raw: parseFloat(kospi.changePercent.toFixed(2)),                                  unit: '%', barMax: 5  },
+      { name: 'KOSPI 추세',   value: Math.round(trend), raw: parseFloat(kospi.changePercent.toFixed(2)),                                  unit: '%', barMax: 5  },
       { name: '종합 심리',   value: Math.round(sentiment), raw: Math.round(sentiment),                                                   unit: '',  barMax: 100}
     ];
 
@@ -220,7 +220,7 @@ async function fetchKRFearGreed() {
     return {
       score: 45, label: '중립',
       indicators: Array(7).fill(0).map((_, i) => ({
-        name: ['시장 모멘텀','주가 강도','주가 폭','변동성','안전자산','추세','심리'][i],
+        name: ['KOSPI 등락률','주가 강도','주가 폭','변동성','안전자산','KOSPI 추세','심리'][i],
         value: 45
       })),
       source: '로딩 실패: ' + e.message
