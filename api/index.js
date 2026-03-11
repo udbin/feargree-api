@@ -6,9 +6,9 @@ const KIS_APP_KEY = process.env.KIS_APP_KEY;
 const KIS_APP_SECRET = process.env.KIS_APP_SECRET;
 const KIS_BASE = 'https://openapivts.koreainvestment.com:29443'; // 모의투자 서버
 
-// Upstash Redis (히스토리 저장)
-const UPSTASH_REDIS_REST_URL   = process.env.UPSTASH_REDIS_REST_URL   || process.env.STORAGE_URL;
-const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.STORAGE_TOKEN;
+// Upstash Redis (히스토리 저장) — 환경변수명: KV_REST_API_URL, KV_REST_API_TOKEN
+const UPSTASH_REDIS_REST_URL   = process.env.KV_REST_API_URL;
+const UPSTASH_REDIS_REST_TOKEN = process.env.KV_REST_API_TOKEN;
 
 let kisToken = null;
 let kisTokenExpiry = 0;
