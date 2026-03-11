@@ -6,8 +6,63 @@ const KIS_APP_KEY = process.env.KIS_APP_KEY;
 const KIS_APP_SECRET = process.env.KIS_APP_SECRET;
 const KIS_BASE = 'https://openapivts.koreainvestment.com:29443'; // 모의투자 서버
 
+// Upstash Redis (히스토리 저장)
+const UPSTASH_REDIS_REST_URL   = process.env.UPSTASH_REDIS_REST_URL   || process.env.STORAGE_URL;
+const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.STORAGE_TOKEN;
+
 let kisToken = null;
 let kisTokenExpiry = 0;
+
+// ─────────────────────────────────────────────
+// Upstash Redis REST 헬퍼
+// ─────────────────────────────────────────────
+async function kvGet(key) {
+  if (!UPSTASH_REDIS_REST_URL || !UPSTASH_REDIS_REST_TOKEN) return null;
+  try {
+    const res = await fetch(`${UPSTASH_REDIS_REST_URL}/get/${key}`, {
+      headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` }
+    });
+    const data = await res.json();
+    return data.result ? JSON.parse(data.result) : null;
+  } catch(e) { console.warn('Redis GET 실패:', e.message); return null; }
+}
+
+async function kvSet(key, value) {
+  if (!UPSTASH_REDIS_REST_URL || !UPSTASH_REDIS_REST_TOKEN) return;
+  try {
+    await fetch(`${UPSTASH_REDIS_REST_URL}/set/${key}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(JSON.stringify(value))
+    });
+  } catch(e) { console.warn('Redis SET 실패:', e.message); }
+}
+
+// 오늘 날짜 KST 기준 YYYY-MM-DD
+function todayKST() {
+  return new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+}
+
+// 히스토리 저장 (최근 30일만 유지)
+async function saveHistory(usScore, krScore) {
+  try {
+    const today = todayKST();
+    let history = await kvGet('feargreed:history') || [];
+    // 오늘 데이터 이미 있으면 업데이트, 없으면 추가
+    const idx = history.findIndex(h => h.date === today);
+    if (idx >= 0) {
+      history[idx] = { date: today, us: usScore, kr: krScore };
+    } else {
+      history.push({ date: today, us: usScore, kr: krScore });
+    }
+    // 최근 30일만 유지
+    history = history.slice(-30);
+    await kvSet('feargreed:history', history);
+  } catch(e) { console.warn('히스토리 저장 실패:', e.message); }
+}
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -16,8 +71,22 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    const [usData, krData] = await Promise.all([fetchUSFearGreed(), fetchKRFearGreed()]);
-    return res.status(200).json({ success: true, timestamp: new Date().toISOString(), us: usData, kr: krData });
+    const [usData, krData, history] = await Promise.all([
+      fetchUSFearGreed(),
+      fetchKRFearGreed(),
+      kvGet('feargreed:history')
+    ]);
+
+    // 히스토리 저장 (비동기, 응답 지연 없이)
+    saveHistory(usData.score, krData.score).catch(() => {});
+
+    return res.status(200).json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      us: usData,
+      kr: krData,
+      history: history || []
+    });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
