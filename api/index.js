@@ -156,23 +156,12 @@ async function fetchKRFearGreed() {
       fetchKISIndex(token, '1001'), // KOSDAQ
     ]);
 
-    // VKOSPI — KIS API로 직접 조회 (코드: 1003)
+    // VKOSPI — 네이버금융 → Yahoo → VIX추정 순서로 시도
     let vkospiVal = 20;
     try {
-      const vkospi = await fetchKISIndex(token, '1003'); // VKOSPI 코드
-      vkospiVal = (vkospi.price > 5 && vkospi.price < 150) ? vkospi.price : 20;
+      vkospiVal = await fetchVKOSPI();
     } catch(e) {
-      console.warn('VKOSPI KIS 실패, Yahoo 시도:', e.message);
-      try {
-        const vk = await fetchYahoo('^VKOSPI');
-        vkospiVal = (vk.price > 5 && vk.price < 150) ? vk.price : 20;
-      } catch(e2) { console.warn('VKOSPI Yahoo도 실패, VIX 기반 추정'); 
-        // VIX 기반으로 VKOSPI 추정 (상관계수 약 0.85)
-        try {
-          const vix = await fetchYahoo('^VIX');
-          vkospiVal = Math.min(150, vix.price * 1.4); // VKOSPI는 VIX보다 약 40% 높은 경향
-        } catch(e3) { vkospiVal = 25; }
-      }
+      console.warn('VKOSPI 전체 실패:', e.message);
     }
 
     console.log(`KOSPI: ${kospi.price} (${kospi.changePercent.toFixed(2)}%)`);
@@ -237,6 +226,73 @@ async function fetchKRFearGreed() {
       source: '로딩 실패: ' + e.message
     };
   }
+}
+
+// VKOSPI 전용 — 네이버금융 스크래핑 → Yahoo → VIX추정
+async function fetchVKOSPI() {
+  // 1차: 네이버금융 VKOSPI 페이지 스크래핑
+  try {
+    const res = await fetch('https://finance.naver.com/sise/sise_index.naver?code=VKOSPI', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html',
+        'Accept-Language': 'ko-KR,ko;q=0.9'
+      }
+    });
+    if (res.ok) {
+      const html = await res.text();
+      // 네이버금융 현재가: <span class="num_total">XX.XX</span> 또는 <strong id="VKOSPI_current_value">
+      const match = html.match(/id="VKOSPI_current_value"[^>]*>([\d.]+)/)
+                 || html.match(/class="num_total"[^>]*>\s*([\d.]+)/)
+                 || html.match(/"now":\s*"([\d.]+)"/)
+                 || html.match(/현재가[^>]*>\s*<[^>]+>([\d.]+)/);
+      if (match) {
+        const v = parseFloat(match[1]);
+        if (v > 5 && v < 200) { console.log(`VKOSPI 네이버: ${v}`); return v; }
+      }
+    }
+  } catch(e) { console.warn('VKOSPI 네이버 실패:', e.message); }
+
+  // 2차: KRX 데이터 API
+  try {
+    const res = await fetch('https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0',
+        'Referer': 'https://data.krx.co.kr'
+      },
+      body: 'bld=dbms/MDC/STAT/standard/MDCSTAT09601&indIdx=1&indIdx2=001'
+    });
+    if (res.ok) {
+      const data = await res.json();
+      // VKOSPI 항목 찾기
+      const rows = data.output || data.OutBlock_1 || [];
+      for (const row of rows) {
+        const name = row.IDX_NM || row.idxNm || '';
+        if (name.includes('VKOSPI') || name.includes('변동성')) {
+          const v = parseFloat(row.CLSPRC_IDX || row.clsprcIdx || 0);
+          if (v > 5 && v < 200) { console.log(`VKOSPI KRX: ${v}`); return v; }
+        }
+      }
+    }
+  } catch(e) { console.warn('VKOSPI KRX 실패:', e.message); }
+
+  // 3차: Yahoo Finance ^VKOSPI
+  try {
+    const vk = await fetchYahoo('^VKOSPI');
+    if (vk.price > 5 && vk.price < 200) { console.log(`VKOSPI Yahoo: ${vk.price}`); return vk.price; }
+  } catch(e) { console.warn('VKOSPI Yahoo 실패:', e.message); }
+
+  // 4차: VIX 기반 추정 (한미 변동성 상관계수 ~0.85, VKOSPI가 VIX보다 평균 40% 높음)
+  try {
+    const vix = await fetchYahoo('^VIX');
+    const estimated = Math.min(150, vix.price * 1.4);
+    console.log(`VKOSPI VIX추정: ${estimated} (VIX=${vix.price})`);
+    return estimated;
+  } catch(e) {}
+
+  throw new Error('VKOSPI 모든 소스 실패');
 }
 
 async function fetchKISIndex(token, code) {
