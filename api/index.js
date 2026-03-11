@@ -115,6 +115,11 @@ module.exports = async function handler(req, res) {
       fetchKRFearGreed(),
     ]);
 
+    // ?reset=1 이면 Redis 초기화 후 강제 시드
+    if (req.query && req.query.reset === '1') {
+      await kvSet('feargreed:history', []);
+    }
+
     // 히스토리 저장 + 반환 (시드 포함)
     const history = await saveHistory(usData.score, krData.score);
 
