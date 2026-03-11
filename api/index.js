@@ -184,13 +184,13 @@ async function fetchKRFearGreed() {
     const sentiment  = (momentum + volatility) / 2;
 
     const indicators = [
-      { name: 'KOSPI 등락률', value: Math.round(momentum), raw: parseFloat(kospi.changePercent.toFixed(2)),                               unit: '%', barMax: 5  },
-      { name: '주가 강도',   value: Math.round(strength), raw: parseFloat(((kospi.changePercent + kosdaq.changePercent) / 2).toFixed(2)), unit: '%', barMax: 5  },
-      { name: '주가 폭 (KOSDAQ)', value: Math.round(breadth), raw: parseFloat(kosdaq.changePercent.toFixed(2)),                          unit: '%', barMax: 5  },
-      { name: '변동성 (VKOSPI)', value: Math.round(volatility), raw: parseFloat(vkospiVal.toFixed(1)),                                   unit: '',  barMax: 80 },
-      { name: '안전자산 수요', value: Math.round(safeHaven), raw: parseFloat((-kospi.changePercent).toFixed(2)),                         unit: '%', barMax: 5  },
-      { name: 'KOSPI 추세',   value: Math.round(trend), raw: parseFloat(kospi.changePercent.toFixed(2)),                                  unit: '%', barMax: 5  },
-      { name: '종합 심리',   value: Math.round(sentiment), raw: Math.round(sentiment),                                                   unit: '',  barMax: 100}
+      { name: 'KOSPI 등락률',   value: Math.round(momentum), raw: parseFloat(kospi.changePercent.toFixed(2)),                               unit: '%', barMax: 5  },
+      { name: 'KOSDAQ 등락률',  value: Math.round(breadth),  raw: parseFloat(kosdaq.changePercent.toFixed(2)),                             unit: '%', barMax: 5  },
+      { name: '주가 강도',      value: Math.round(strength), raw: parseFloat(((kospi.changePercent + kosdaq.changePercent) / 2).toFixed(2)), unit: '%', barMax: 5  },
+      { name: '변동성 (VKOSPI)', value: Math.round(volatility), raw: parseFloat(vkospiVal.toFixed(1)),                                      unit: '',  barMax: 80 },
+      { name: '안전자산 수요',  value: Math.round(safeHaven), raw: parseFloat((-kospi.changePercent).toFixed(2)),                           unit: '%', barMax: 5  },
+      { name: 'KOSPI 추세',     value: Math.round(trend), raw: parseFloat(kospi.changePercent.toFixed(2)),                                  unit: '%', barMax: 5  },
+      { name: '종합 심리',      value: Math.round(sentiment), raw: Math.round(sentiment),                                                   unit: '',  barMax: 100}
     ];
 
     // VKOSPI에 가중치 2배 부여 (VIX처럼 시장 공포의 핵심 지표)
