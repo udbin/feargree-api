@@ -179,15 +179,19 @@ async function fetchKRFearGreed() {
     console.log(`KOSDAQ: ${kosdaq.price} (${kosdaq.changePercent.toFixed(2)}%)`);
     console.log(`VKOSPI: ${vkospiVal}`);
 
-    const momentum   = normalize(kospi.changePercent, -4, 4);
-    const strength   = normalize((kospi.changePercent + kosdaq.changePercent) / 2, -4, 4);
+    // VKOSPI가 40 이상이면 시장 전체가 공포 상태 → 모멘텀 지표 상한 억제
+    const vkospiPenalty = vkospiVal > 40 ? Math.min(1, (vkospiVal - 40) / 60) : 0; // 0~1
+    const cap = Math.round(100 - vkospiPenalty * 60); // VKOSPI 100이면 모멘텀 상한 40
+
+    const momentum   = Math.min(cap, normalize(kospi.changePercent, -4, 4));
+    const strength   = Math.min(cap, normalize((kospi.changePercent + kosdaq.changePercent) / 2, -4, 4));
     const breadth    = normalize(kosdaq.changePercent - kospi.changePercent, -3, 3);
     // VKOSPI 정상범위 10~40, 공포구간 40~80, 극단공포 80+
     const volatility = Math.max(0, Math.min(100, 100 - (vkospiVal - 10) * 1.2));
     const safeHaven  = normalize(-kospi.changePercent, -4, 4);
-    const trend      = kospi.changePercent > 0
+    const trend      = Math.min(cap, kospi.changePercent > 0
       ? Math.min(100, 55 + kospi.changePercent * 5)
-      : Math.max(0, 45 + kospi.changePercent * 5);
+      : Math.max(0, 45 + kospi.changePercent * 5));
     const sentiment  = (momentum + volatility) / 2;
 
     const indicators = [
@@ -200,9 +204,18 @@ async function fetchKRFearGreed() {
       { name: '종합 심리', value: Math.round(sentiment) }
     ];
 
-    const score = Math.max(0, Math.min(100,
-      Math.round(indicators.reduce((s, i) => s + i.value, 0) / indicators.length)
-    ));
+    // VKOSPI에 가중치 2배 부여 (VIX처럼 시장 공포의 핵심 지표)
+    const weightedScore = (
+      momentum * 1 +
+      strength * 1 +
+      breadth  * 1 +
+      volatility * 2 +  // VKOSPI 가중치 2배
+      safeHaven * 1 +
+      trend    * 1 +
+      sentiment * 1
+    ) / 8;
+
+    const score = Math.max(0, Math.min(100, Math.round(weightedScore)));
 
     return {
       score, label: getLabel(score),
