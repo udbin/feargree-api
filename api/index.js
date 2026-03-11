@@ -111,19 +111,22 @@ async function fetchKRFearGreed() {
   try {
     const token = await getKISToken();
 
-    // KOSPI(0001), KOSDAQ(1001), VKOSPI(5300) 동시 조회
-    const [kospi, kosdaq, vkospi] = await Promise.all([
+    // KOSPI(0001), KOSDAQ(1001) 조회 + VKOSPI는 Yahoo Finance
+    const [kospi, kosdaq] = await Promise.all([
       fetchKISIndex(token, '0001'), // KOSPI
       fetchKISIndex(token, '1001'), // KOSDAQ
-      fetchKISIndex(token, '5300'), // VKOSPI
     ]);
+
+    // VKOSPI는 Yahoo Finance로 별도 조회
+    let vkospiVal = 20;
+    try {
+      const vk = await fetchYahoo('^VKOSPI');
+      vkospiVal = (vk.price > 5 && vk.price < 100) ? vk.price : 20;
+    } catch(e) { console.warn('VKOSPI Yahoo 실패, 기본값 사용'); }
 
     console.log(`KOSPI: ${kospi.price} (${kospi.changePercent.toFixed(2)}%)`);
     console.log(`KOSDAQ: ${kosdaq.price} (${kosdaq.changePercent.toFixed(2)}%)`);
-    console.log(`VKOSPI: ${vkospi.price}`);
-
-    // VKOSPI 정상 범위 체크 (보통 10~50)
-    const vkospiVal = (vkospi.price > 5 && vkospi.price < 100) ? vkospi.price : 20;
+    console.log(`VKOSPI: ${vkospiVal}`);
 
     const momentum   = normalize(kospi.changePercent, -4, 4);
     const strength   = normalize((kospi.changePercent + kosdaq.changePercent) / 2, -4, 4);
@@ -224,5 +227,3 @@ function getLabel(score) {
   if (score < 75) return '탐욕';
   return '극단적 탐욕';
 }
-
-
