@@ -1,6 +1,13 @@
 // api/index.js - Vercel Serverless Function
 // 미국: CNN Fear & Greed Index
-// 한국: Yahoo Finance (KS11, KQ11, VKOSPI)
+// 한국: 한국투자증권 Open API (모의투자)
+
+const KIS_APP_KEY = process.env.KIS_APP_KEY;
+const KIS_APP_SECRET = process.env.KIS_APP_SECRET;
+const KIS_BASE = 'https://openapivts.koreainvestment.com:29443'; // 모의투자 서버
+
+let kisToken = null;
+let kisTokenExpiry = 0;
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -75,14 +82,40 @@ async function fetchUSFallback() {
 }
 
 // ─────────────────────────────────────────────
-// 한국: Yahoo Finance (여러 엔드포인트 시도)
+// 한국투자증권 API - 토큰 발급
+// ─────────────────────────────────────────────
+async function getKISToken() {
+  const now = Date.now();
+  if (kisToken && now < kisTokenExpiry) return kisToken;
+
+  const res = await fetch(`${KIS_BASE}/oauth2/tokenP`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grant_type: 'client_credentials',
+      appkey: KIS_APP_KEY,
+      appsecret: KIS_APP_SECRET
+    })
+  });
+  if (!res.ok) throw new Error(`KIS 토큰 발급 실패: ${res.status}`);
+  const data = await res.json();
+  kisToken = data.access_token;
+  kisTokenExpiry = now + (data.expires_in - 60) * 1000;
+  return kisToken;
+}
+
+// ─────────────────────────────────────────────
+// 한국: 한국투자증권 API로 지수 조회
 // ─────────────────────────────────────────────
 async function fetchKRFearGreed() {
   try {
+    const token = await getKISToken();
+
+    // KOSPI(0001), KOSDAQ(1001), VKOSPI(5300) 동시 조회
     const [kospi, kosdaq, vkospi] = await Promise.all([
-      fetchYahooKR('^KS11'),
-      fetchYahooKR('^KQ11'),
-      fetchYahooKR('^VKOSPI')
+      fetchKISIndex(token, '0001'), // KOSPI
+      fetchKISIndex(token, '1001'), // KOSDAQ
+      fetchKISIndex(token, '5300'), // VKOSPI
     ]);
 
     console.log(`KOSPI: ${kospi.price} (${kospi.changePercent.toFixed(2)}%)`);
@@ -95,7 +128,6 @@ async function fetchKRFearGreed() {
     const momentum   = normalize(kospi.changePercent, -4, 4);
     const strength   = normalize((kospi.changePercent + kosdaq.changePercent) / 2, -4, 4);
     const breadth    = normalize(kosdaq.changePercent - kospi.changePercent, -3, 3);
-    // VKOSPI: 낮을수록 탐욕 (10=극단탐욕, 20=중립, 40=극단공포)
     const volatility = Math.max(0, Math.min(100, 100 - (vkospiVal - 10) * 4));
     const safeHaven  = normalize(-kospi.changePercent, -4, 4);
     const trend      = kospi.changePercent > 0
@@ -124,7 +156,7 @@ async function fetchKRFearGreed() {
       kosdaq_change: kosdaq.changePercent.toFixed(2),
       vkospi: vkospiVal.toFixed(2),
       indicators,
-      source: 'Yahoo Finance 실시간'
+      source: '한국투자증권 Open API'
     };
   } catch (e) {
     console.error('KR 오류:', e.message);
@@ -139,54 +171,33 @@ async function fetchKRFearGreed() {
   }
 }
 
-// Yahoo Finance - 여러 엔드포인트 시도
-async function fetchYahooKR(symbol) {
-  const encoded = encodeURIComponent(symbol);
-
-  // v8 엔드포인트 먼저 시도
-  try {
-    const res = await fetch(
-      `https://query2.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=5d&includePrePost=false`,
-      { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0', 'Accept': 'application/json', 'Accept-Language': 'en-US,en;q=0.9' } }
-    );
-    if (res.ok) {
-      const data = await res.json();
-      const result = data.chart?.result?.[0];
-      if (result) {
-        const meta = result.meta;
-        const price = meta.regularMarketPrice || meta.previousClose || 0;
-        const prevClose = meta.chartPreviousClose || meta.previousClose || price;
-        const changePercent = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
-        return { symbol, price, prevClose, changePercent };
+async function fetchKISIndex(token, code) {
+  const res = await fetch(
+    `${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-index-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${code}`,
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'authorization': `Bearer ${token}`,
+        'appkey': KIS_APP_KEY,
+        'appsecret': KIS_APP_SECRET,
+        'tr_id': 'FHPUP02100000'
       }
     }
-  } catch (e) { console.warn(`v8 실패 ${symbol}:`, e.message); }
+  );
+  if (!res.ok) throw new Error(`KIS 지수 조회 실패 ${code}: ${res.status}`);
+  const data = await res.json();
+  const output = data.output;
 
-  // v7 엔드포인트 시도
-  try {
-    const res = await fetch(
-      `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encoded}`,
-      { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } }
-    );
-    if (res.ok) {
-      const data = await res.json();
-      const quote = data.quoteResponse?.result?.[0];
-      if (quote) {
-        return {
-          symbol,
-          price: quote.regularMarketPrice || 0,
-          prevClose: quote.regularMarketPreviousClose || 0,
-          changePercent: quote.regularMarketChangePercent || 0
-        };
-      }
-    }
-  } catch (e) { console.warn(`v7 실패 ${symbol}:`, e.message); }
+  const price = parseFloat(output.bstp_nmix_prpr || 0);       // 현재가
+  const change = parseFloat(output.bstp_nmix_prdy_vrss || 0); // 전일대비
+  const prevPrice = price - change;
+  const changePercent = prevPrice > 0 ? (change / prevPrice) * 100 : 0;
 
-  throw new Error(`${symbol} 데이터 조회 실패`);
+  return { price, change, changePercent };
 }
 
 // ─────────────────────────────────────────────
-// Yahoo Finance 미국용 (기존)
+// Yahoo Finance (미국용)
 // ─────────────────────────────────────────────
 async function fetchYahoo(symbol) {
   const res = await fetch(
@@ -204,7 +215,7 @@ async function fetchYahoo(symbol) {
 // ─────────────────────────────────────────────
 // 유틸
 // ─────────────────────────────────────────────
-function normalize(value, min, max) { return Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100)); }
+function normalize(v, min, max) { return Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100)); }
 function getDateString() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function getLabel(score) {
   if (score < 25) return '극단적 공포';
@@ -213,3 +224,5 @@ function getLabel(score) {
   if (score < 75) return '탐욕';
   return '극단적 탐욕';
 }
+
+
