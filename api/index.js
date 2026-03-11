@@ -84,8 +84,8 @@ async function saveHistory(usScore, krScore) {
     const today = todayKST();
     let history = await kvGet('feargreed:history') || [];
 
-    // 데이터가 부족하면 시드로 채우기
-    if (history.length < 29) {
+    // 데이터가 부족하면 시드로 채우기 (2개 미만이면 시드 실행)
+    if (history.length < 2) {
       return await seedHistory(usScore, krScore);
     }
 
