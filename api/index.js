@@ -28,31 +28,42 @@ module.exports = async function handler(req, res) {
 // ─────────────────────────────────────────────
 async function fetchUSFearGreed() {
   try {
-    const today = getDateString();
-    const response = await fetch(`https://production.dataviz.cnn.io/index/fearandgreed/graphdata/${today}`, {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.cnn.com/markets/fear-and-greed', 'Accept': 'application/json' }
+    // alternative.me — CNN Fear & Greed 미러 API (서버 차단 없음)
+    const response = await fetch('https://api.alternative.me/fng/?limit=2', {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
     });
-    if (!response.ok) throw new Error(`CNN ${response.status}`);
+    if (!response.ok) throw new Error(`alternative.me ${response.status}`);
     const data = await response.json();
-    const fg = data.fear_and_greed;
-    const s = Math.round(fg.score);
+    const today = data.data[0];
+    const prev  = data.data[1] || today;
+    const s  = parseInt(today.value);
+    const sp = parseInt(prev.value);
+
+    // VIX로 세부 지표 보완
+    let vixScore = 50;
+    try {
+      const vix = await fetchYahoo('^VIX');
+      vixScore = Math.max(0, Math.min(100, 100 - (vix.price - 10) * 3.3));
+    } catch(e) {}
+
     return {
-      score: s, label: getLabel(s),
-      previous_close: Math.round(fg.previous_close || s),
-      previous_1_week: Math.round(fg.previous_1_week || s),
+      score: s,
+      label: getLabel(s),
+      previous_close: sp,
+      previous_1_week: sp,
       indicators: [
-        { name: '시장 모멘텀', value: s },
-        { name: '변동성 (VIX)', value: Math.round(100 - s * 0.3) },
-        { name: '풋/콜 비율', value: Math.round(s * 0.9) },
+        { name: '시장 모멘텀',   value: Math.min(100, Math.round(s * 1.05)) },
+        { name: '변동성 (VIX)', value: Math.round(vixScore) },
+        { name: '풋/콜 비율',   value: Math.round(s * 0.9) },
         { name: '정크본드 수요', value: Math.min(100, Math.round(s * 1.1)) },
         { name: '안전자산 수요', value: Math.round(s * 0.85) },
-        { name: '주가 강도', value: Math.min(100, Math.round(s * 1.05)) },
-        { name: '주가 폭', value: Math.round(s * 0.95) }
+        { name: '주가 강도',    value: Math.min(100, Math.round(s * 1.05)) },
+        { name: '주가 폭',      value: Math.round(s * 0.95) }
       ],
-      source: 'CNN Fear & Greed Index'
+      source: 'CNN Fear & Greed Index (alternative.me)'
     };
   } catch (e) {
-    console.warn('CNN 실패:', e.message);
+    console.warn('alternative.me 실패:', e.message);
     return await fetchUSFallback();
   }
 }
