@@ -168,15 +168,15 @@ async function fetchKRFearGreed() {
     console.log(`KOSDAQ: ${kosdaq.price} (${kosdaq.changePercent.toFixed(2)}%)`);
     console.log(`VKOSPI: ${vkospiVal}`);
 
-    // VKOSPI가 40 이상이면 시장 전체가 공포 상태 → 모멘텀 지표 상한 억제
-    const vkospiPenalty = vkospiVal > 40 ? Math.min(1, (vkospiVal - 40) / 60) : 0; // 0~1
-    const cap = Math.round(100 - vkospiPenalty * 60); // VKOSPI 100이면 모멘텀 상한 40
+    // 실제 시장 기준: VKOSPI 15=안정, 30+=경계(패널티 시작), 40+=공포, 70+=극단공포
+    const vkospiPenalty = vkospiVal > 30 ? Math.min(1, (vkospiVal - 30) / 50) : 0;
+    const cap = Math.round(100 - vkospiPenalty * 50); // VKOSPI 80이면 상한 50
 
     const momentum   = Math.min(cap, normalize(kospi.changePercent, -4, 4));
     const strength   = Math.min(cap, normalize((kospi.changePercent + kosdaq.changePercent) / 2, -4, 4));
     const breadth    = normalize(kosdaq.changePercent - kospi.changePercent, -3, 3);
-    // VKOSPI 정상범위 10~40, 공포구간 40~80, 극단공포 80+
-    const volatility = Math.max(0, Math.min(100, 100 - (vkospiVal - 10) * 1.2));
+    // VKOSPI 15(안정)→100점, 40(공포)→50점, 70(극단)→0점
+    const volatility = Math.max(0, Math.min(100, (70 - vkospiVal) / (70 - 15) * 100));
     const safeHaven  = normalize(-kospi.changePercent, -4, 4);
     const trend      = Math.min(cap, kospi.changePercent > 0
       ? Math.min(100, 55 + kospi.changePercent * 5)
