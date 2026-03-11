@@ -27,74 +27,96 @@ module.exports = async function handler(req, res) {
 // 미국: CNN Fear & Greed
 // ─────────────────────────────────────────────
 async function fetchUSFearGreed() {
-  try {
-    // CNN previous_close 엔드포인트 — 전일 종가 기준 공식 지수
-    const response = await fetch('https://production.dataviz.cnn.io/index/fearandgreed/graphdata/previous_close', {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Referer': 'https://www.cnn.com/markets/fear-and-greed',
-        'Accept': 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Origin': 'https://www.cnn.com'
-      }
-    });
-    if (!response.ok) throw new Error(`CNN previous_close ${response.status}`);
-    const data = await response.json();
-    const fg = data.fear_and_greed;
-    const s  = Math.round(fg.score);
-    const sp = Math.round(fg.previous_close || s);
-    const sw = Math.round(fg.previous_1_week || s);
+  // CNN 여러 엔드포인트 순서대로 시도
+  const endpoints = [
+    'https://production.dataviz.cnn.io/index/fearandgreed/graphdata/previous_close',
+    `https://production.dataviz.cnn.io/index/fearandgreed/graphdata/${getDateString()}`,
+    'https://production.dataviz.cnn.io/index/fearandgreed/graphdata/2025-01-01',
+  ];
+  const hdrs = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Referer': 'https://www.cnn.com/markets/fear-and-greed',
+    'Accept': 'application/json',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Origin': 'https://www.cnn.com',
+    'Cache-Control': 'no-cache'
+  };
 
-    // VIX로 세부 지표 보완
-    let vixScore = 50;
+  for (const url of endpoints) {
     try {
-      const vix = await fetchYahoo('^VIX');
-      vixScore = Math.max(0, Math.min(100, 100 - (vix.price - 10) * 3.3));
-    } catch(e) {}
-
-    return {
-      score: s,
-      label: getLabel(s),
-      previous_close: sp,
-      previous_1_week: sw,
-      indicators: [
-        { name: '시장 모멘텀',   value: Math.min(100, Math.round(s * 1.05)) },
-        { name: '변동성 (VIX)', value: Math.round(vixScore) },
-        { name: '풋/콜 비율',   value: Math.round(s * 0.9) },
-        { name: '정크본드 수요', value: Math.min(100, Math.round(s * 1.1)) },
-        { name: '안전자산 수요', value: Math.round(s * 0.85) },
-        { name: '주가 강도',    value: Math.min(100, Math.round(s * 1.05)) },
-        { name: '주가 폭',      value: Math.round(s * 0.95) }
-      ],
-      source: 'CNN Fear & Greed Index'
-    };
-  } catch (e) {
-    console.warn('CNN previous_close 실패:', e.message);
-    return await fetchUSFallback();
+      const res = await fetch(url, { headers: hdrs });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const fg = data.fear_and_greed;
+      if (!fg || !fg.score) continue;
+      const s  = Math.round(fg.score);
+      const sp = Math.round(fg.previous_close || s);
+      const sw = Math.round(fg.previous_1_week || s);
+      let vixScore = 50;
+      try { const vix = await fetchYahoo('^VIX'); vixScore = Math.max(0, Math.min(100, 100 - (vix.price - 10) * 3.3)); } catch(e) {}
+      return {
+        score: s, label: getLabel(s),
+        previous_close: sp, previous_1_week: sw,
+        indicators: [
+          { name: '시장 모멘텀',   value: Math.min(100, Math.round(s * 1.05)) },
+          { name: '변동성 (VIX)', value: Math.round(vixScore) },
+          { name: '풋/콜 비율',   value: Math.round(s * 0.9) },
+          { name: '정크본드 수요', value: Math.min(100, Math.round(s * 1.1)) },
+          { name: '안전자산 수요', value: Math.round(s * 0.85) },
+          { name: '주가 강도',    value: Math.min(100, Math.round(s * 1.05)) },
+          { name: '주가 폭',      value: Math.round(s * 0.95) }
+        ],
+        source: 'CNN Fear & Greed Index'
+      };
+    } catch(e) { console.warn(`CNN 엔드포인트 실패 ${url}:`, e.message); }
   }
+  // 모두 실패시 VIX + S&P500 + HYG(정크본드) + TLT(국채) 기반 직접 계산
+  return await fetchUSFallback();
 }
 
 async function fetchUSFallback() {
   try {
-    const [vix, sp500] = await Promise.all([fetchYahoo('^VIX'), fetchYahoo('^GSPC')]);
-    const vixScore = Math.max(0, Math.min(100, 100 - (vix.price - 10) * 3.3));
-    const momentumScore = Math.max(0, Math.min(100, 50 + sp500.changePercent * 10));
-    const score = Math.round(vixScore * 0.6 + momentumScore * 0.4);
+    // VIX, S&P500, 정크본드(HYG), 국채(TLT) 동시 조회
+    const [vix, sp500, hyg, tlt] = await Promise.allSettled([
+      fetchYahoo('^VIX'),
+      fetchYahoo('^GSPC'),
+      fetchYahoo('HYG'),   // 정크본드 ETF
+      fetchYahoo('TLT'),   // 장기국채 ETF
+    ]);
+
+    const vixPrice      = vix.status === 'fulfilled'   ? vix.value.price        : 20;
+    const spChange      = sp500.status === 'fulfilled' ? sp500.value.changePercent : 0;
+    const hygChange     = hyg.status === 'fulfilled'   ? hyg.value.changePercent  : 0;
+    const tltChange     = tlt.status === 'fulfilled'   ? tlt.value.changePercent  : 0;
+
+    // 각 지표를 0~100으로 환산
+    const vixScore      = Math.max(0, Math.min(100, 100 - (vixPrice - 10) * 3.5));  // VIX 낮을수록 탐욕
+    const momentumScore = Math.max(0, Math.min(100, 50 + spChange * 12));            // S&P500 모멘텀
+    const junkScore     = Math.max(0, Math.min(100, 50 + hygChange * 15));           // 정크본드 수요
+    const safeHaven     = Math.max(0, Math.min(100, 50 - tltChange * 10));           // 안전자산 역방향
+
+    // CNN 가중 평균 모방 (동일 가중)
+    const score = Math.round((vixScore + momentumScore + junkScore + safeHaven) / 4);
+
     return {
       score, label: getLabel(score),
+      previous_close: score,
+      previous_1_week: score,
       indicators: [
-        { name: '시장 모멘텀', value: Math.round(momentumScore) },
+        { name: '시장 모멘텀',   value: Math.round(momentumScore) },
         { name: '변동성 (VIX)', value: Math.round(vixScore) },
-        { name: '풋/콜 비율', value: score },
-        { name: '정크본드 수요', value: score },
-        { name: '안전자산 수요', value: 100 - score },
-        { name: '주가 강도', value: score },
-        { name: '주가 폭', value: score }
+        { name: '풋/콜 비율',   value: Math.round((momentumScore + vixScore) / 2) },
+        { name: '정크본드 수요', value: Math.round(junkScore) },
+        { name: '안전자산 수요', value: Math.round(safeHaven) },
+        { name: '주가 강도',    value: Math.min(100, Math.round(momentumScore * 1.05)) },
+        { name: '주가 폭',      value: Math.round(momentumScore * 0.95) }
       ],
-      source: 'Yahoo Finance (VIX 기반)'
+      source: 'Yahoo Finance (VIX·S&P500·HYG·TLT 기반)'
     };
   } catch (e) {
-    return { score: 45, label: '중립', indicators: Array(7).fill(0).map((_, i) => ({ name: ['시장 모멘텀','변동성','풋/콜','정크본드','안전자산','주가 강도','주가 폭'][i], value: 45 })), source: '로딩 실패' };
+    return { score: 45, label: '중립', previous_close: 45, previous_1_week: 45,
+      indicators: Array(7).fill(0).map((_, i) => ({ name: ['시장 모멘텀','변동성','풋/콜','정크본드','안전자산','주가 강도','주가 폭'][i], value: 45 })),
+      source: '로딩 실패' };
   }
 }
 
