@@ -67,18 +67,20 @@ async function saveHistory(usScore, krScore) {
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate');
+  res.setHeader('Cache-Control', 'no-store');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    const [usData, krData, history] = await Promise.all([
+    const [usData, krData] = await Promise.all([
       fetchUSFearGreed(),
       fetchKRFearGreed(),
-      kvGet('feargreed:history')
     ]);
 
-    // 히스토리 저장 (비동기, 응답 지연 없이)
-    saveHistory(usData.score, krData.score).catch(() => {});
+    // 히스토리 저장 먼저 (await)
+    await saveHistory(usData.score, krData.score);
+
+    // 저장 후 읽기
+    const history = await kvGet('feargreed:history');
 
     return res.status(200).json({
       success: true,
