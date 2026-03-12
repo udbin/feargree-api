@@ -17,23 +17,30 @@ async function kvGet(key) {
       headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
     });
     const json = await res.json();
-    console.log('kvGet raw:', JSON.stringify(json).slice(0, 200));
+    console.log('kvGet raw result type:', typeof json.result, 'value preview:', JSON.stringify(json.result)?.slice(0,100));
     if (json.result === null || json.result === undefined) return null;
-    return typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
+    // 문자열이면 JSON 파싱 시도
+    if (typeof json.result === 'string') {
+      try { return JSON.parse(json.result); } catch(e) {
+        // 이중 직렬화된 경우
+        try { return JSON.parse(JSON.parse(json.result)); } catch(e2) { return null; }
+      }
+    }
+    return json.result;
   } catch(e) { console.warn('kvGet fail:', e.message); return null; }
 }
 
 async function kvSet(key, value) {
   if (!REDIS_URL || !REDIS_TOKEN) return;
   try {
-    // Upstash REST: POST /set  body: ["key", "value"]
+    // Upstash REST API: POST /set/key with JSON body ["value"]
     const res = await fetch(`${REDIS_URL}/set/${key}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${REDIS_TOKEN}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(JSON.stringify(value))  // value must be a JSON string
+      body: JSON.stringify([JSON.stringify(value)])
     });
     const json = await res.json();
     console.log('kvSet result:', JSON.stringify(json));
@@ -66,9 +73,10 @@ async function saveHistory(usScore, krScore) {
   try {
     const today = todayKST();
     let history = await kvGet('feargreed:history') || [];
-    console.log('Current history length:', history.length);
+    console.log('saveHistory: history length after kvGet:', history.length);
 
-    if (history.length < 5) {
+    if (!Array.isArray(history) || history.length < 5) {
+      console.log('Running seed...');
       return await seedHistory(usScore, krScore);
     }
     const idx = history.findIndex(h => h.date === today);
@@ -90,10 +98,13 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    // ?reset=1 이면 강제 시드
     if (req.query && req.query.reset === '1') {
-      await kvSet('feargreed:history', []);
-      console.log('History reset!');
+      // 완전 삭제 후 재시드
+      await fetch(`${REDIS_URL}/del/feargreed:history`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
+      });
+      console.log('History deleted!');
     }
 
     const [usData, krData] = await Promise.all([fetchUSFearGreed(), fetchKRFearGreed()]);
@@ -178,7 +189,6 @@ async function fetchUSFallback() {
   }
 }
 
-// ── KIS 토큰 ──
 async function getKISToken() {
   const now = Date.now();
   if (kisToken && now < kisTokenExpiry) return kisToken;
@@ -193,7 +203,6 @@ async function getKISToken() {
   return kisToken;
 }
 
-// ── 한국 ──
 async function fetchKRFearGreed() {
   try {
     const token = await getKISToken();
