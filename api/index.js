@@ -210,16 +210,39 @@ async function fetchKRFearGreed() {
     let vkospiVal = 20;
     try { vkospiVal = await fetchVKOSPI(); } catch(e){ console.warn('VKOSPI all fail:', e.message); }
 
-    const vkospiPenalty = vkospiVal > 30 ? Math.min(1,(vkospiVal-30)/50) : 0;
-    const cap = Math.round(100-vkospiPenalty*50);
-    const momentum   = Math.min(cap,normalize(kospi.changePercent,-4,4));
-    const strength   = Math.min(cap,normalize((kospi.changePercent+kosdaq.changePercent)/2,-4,4));
-    const breadth    = normalize(kosdaq.changePercent-kospi.changePercent,-3,3);
-    const volatility = Math.max(0,Math.min(100,(70-vkospiVal)/(70-15)*100));
-    const safeHaven  = normalize(-kospi.changePercent,-4,4);
-    const trend      = Math.min(cap,kospi.changePercent>0?Math.min(100,55+kospi.changePercent*5):Math.max(0,45+kospi.changePercent*5));
-    const sentiment  = (momentum+volatility)/2;
-    const score = Math.max(0,Math.min(100,Math.round((momentum+strength+breadth+volatility*2+safeHaven+trend+sentiment)/8)));
+    // VKOSPI 기반 변동성 (비중 가장 높음 - 가장 신뢰도 높은 지표)
+    // VKOSPI 15=안정, 30=주의, 50=공포, 70=극단공포
+    const volatility = Math.max(0, Math.min(100, (55 - vkospiVal) / (55 - 12) * 100));
+
+    // KOSPI 등락률 (핵심 지표)
+    const momentum = normalize(kospi.changePercent, -4, 4);
+
+    // KOSDAQ 등락률 (보조 지표 - KOSPI와 독립적으로만 평가, 차이값 사용 안 함)
+    const kosdaqScore = normalize(kosdaq.changePercent, -4, 4);
+
+    // 주가 강도 = KOSPI·KOSDAQ 평균
+    const strength = normalize((kospi.changePercent + kosdaq.changePercent) / 2, -4, 4);
+
+    // 안전자산 수요 = KOSPI 하락 시 안전자산 수요 증가
+    const safeHaven = normalize(-kospi.changePercent, -4, 4);
+
+    // 추세 = KOSPI 방향성
+    const trend = kospi.changePercent > 0
+      ? Math.min(100, 50 + kospi.changePercent * 6)
+      : Math.max(0, 50 + kospi.changePercent * 6);
+
+    // 종합 심리 = VKOSPI + 모멘텀 평균
+    const sentiment = (volatility * 0.6 + momentum * 0.4);
+
+    // 최종 점수: VKOSPI 30% + KOSPI모멘텀 25% + 강도 15% + 추세 15% + KOSDAQ 10% + 안전자산 5%
+    const score = Math.max(0, Math.min(100, Math.round(
+      volatility  * 0.30 +
+      momentum    * 0.25 +
+      strength    * 0.15 +
+      trend       * 0.15 +
+      kosdaqScore * 0.10 +
+      safeHaven   * 0.05
+    )));
 
     return {
       score, label:getLabel(score),
@@ -227,7 +250,7 @@ async function fetchKRFearGreed() {
       kosdaq_change:kosdaq.changePercent.toFixed(2), vkospi:vkospiVal.toFixed(2),
       indicators:[
         {name:'KOSPI 등락률',  value:Math.round(momentum),  raw:parseFloat(kospi.changePercent.toFixed(2)),                                       unit:'%',  barMax:5  },
-        {name:'KOSDAQ 등락률', value:Math.round(breadth),   raw:parseFloat(kosdaq.changePercent.toFixed(2)),                                      unit:'%',  barMax:5  },
+        {name:'KOSDAQ 등락률', value:Math.round(kosdaqScore),raw:parseFloat(kosdaq.changePercent.toFixed(2)),                                      unit:'%',  barMax:5  },
         {name:'주가 강도',     value:Math.round(strength),  raw:parseFloat(((kospi.changePercent+kosdaq.changePercent)/2).toFixed(2)),             unit:'%',  barMax:5  },
         {name:'변동성 (VKOSPI)',value:Math.round(volatility),raw:parseFloat(vkospiVal.toFixed(1)),                                                unit:'',   barMax:80 },
         {name:'안전자산 수요', value:Math.round(safeHaven), raw:parseFloat((-kospi.changePercent).toFixed(2)),                                    unit:'%',  barMax:5  },
