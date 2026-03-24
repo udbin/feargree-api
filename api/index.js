@@ -315,13 +315,22 @@ async function fetchKISIndex(token, code) {
   const prev = price - change;
   let changePercent = prev > 0 ? (change / prev) * 100 : 0;
 
-  // 장외 시간(장 시작 전/후)에 등락률이 0이면 전일 종가 등락률 사용
-  // bstp_nmix_prdy_ctrt: 전일 대비율 필드 활용
-  if (!isMarketOpen() && Math.abs(changePercent) < 0.001) {
-    const prevCtrt = parseFloat(o.bstp_nmix_prdy_ctrt || 0);
-    if (Math.abs(prevCtrt) > 0.001) {
-      changePercent = prevCtrt;
-      console.log(`장외시간 전일종가 등락률 사용 [${code}]:`, changePercent);
+  const redisKey = `feargreed:lastclose:${code}`;
+
+  if (isMarketOpen() && Math.abs(changePercent) > 0.001) {
+    // 장중에 유효한 등락률이 있으면 Redis에 저장
+    await kvSet(redisKey, { changePercent, updatedAt: new Date().toISOString() });
+    console.log(`장중 종가 저장 [${code}]:`, changePercent);
+  } else if (Math.abs(changePercent) < 0.001) {
+    // 등락률이 0이면 Redis에서 마지막 저장된 종가 등락률 복원
+    try {
+      const saved = await kvGet(redisKey);
+      if (saved && Math.abs(saved.changePercent) > 0.001) {
+        changePercent = saved.changePercent;
+        console.log(`장외시간 Redis 종가 복원 [${code}]:`, changePercent, '(저장시각:', saved.updatedAt, ')');
+      }
+    } catch(e) {
+      console.warn(`Redis 종가 복원 실패 [${code}]:`, e.message);
     }
   }
 
