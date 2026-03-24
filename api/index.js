@@ -291,6 +291,17 @@ async function fetchVKOSPI() {
   throw new Error('VKOSPI all sources failed');
 }
 
+function isMarketOpen() {
+  // KST = UTC+9
+  const now = new Date();
+  const kstHour = (now.getUTCHours() + 9) % 24;
+  const kstMin  = now.getUTCMinutes();
+  const kstDay  = new Date(now.getTime() + 9*3600*1000).getUTCDay(); // 0=일,6=토
+  if (kstDay === 0 || kstDay === 6) return false;
+  const kstTotal = kstHour * 60 + kstMin;
+  return kstTotal >= 9*60 && kstTotal < 15*60+30; // 09:00~15:30
+}
+
 async function fetchKISIndex(token, code) {
   const res = await fetch(
     `${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-index-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${code}`,
@@ -302,7 +313,19 @@ async function fetchKISIndex(token, code) {
   const price = parseFloat(o.bstp_nmix_prpr||0);
   const change = parseFloat(o.bstp_nmix_prdy_vrss||0);
   const prev = price - change;
-  return { price, change, changePercent: prev>0?(change/prev)*100:0 };
+  let changePercent = prev > 0 ? (change / prev) * 100 : 0;
+
+  // 장외 시간(장 시작 전/후)에 등락률이 0이면 전일 종가 등락률 사용
+  // bstp_nmix_prdy_ctrt: 전일 대비율 필드 활용
+  if (!isMarketOpen() && Math.abs(changePercent) < 0.001) {
+    const prevCtrt = parseFloat(o.bstp_nmix_prdy_ctrt || 0);
+    if (Math.abs(prevCtrt) > 0.001) {
+      changePercent = prevCtrt;
+      console.log(`장외시간 전일종가 등락률 사용 [${code}]:`, changePercent);
+    }
+  }
+
+  return { price, change, changePercent };
 }
 
 async function fetchYahoo(symbol) {
