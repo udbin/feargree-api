@@ -99,12 +99,22 @@ module.exports = async function handler(req, res) {
 
   try {
     if (req.query && req.query.reset === '1') {
-      // 완전 삭제 후 재시드
       await fetch(`${REDIS_URL}/del/feargreed:history`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
       });
       console.log('History deleted!');
+    }
+
+    // 종가 수동 세팅: ?setclose=1&kospi=1.56&kosdaq=3.40
+    if (req.query && req.query.setclose === '1') {
+      const kospiChg  = parseFloat(req.query.kospi  || 0);
+      const kosdaqChg = parseFloat(req.query.kosdaq || 0);
+      const now = new Date().toISOString();
+      await kvSet('feargreed:lastclose:0001', { changePercent: kospiChg,  updatedAt: now });
+      await kvSet('feargreed:lastclose:1001', { changePercent: kosdaqChg, updatedAt: now });
+      console.log('종가 수동 세팅 — KOSPI:', kospiChg, 'KOSDAQ:', kosdaqChg);
+      return res.status(200).json({ success: true, message: '종가 저장 완료', kospi: kospiChg, kosdaq: kosdaqChg });
     }
 
     const [usData, krData] = await Promise.all([fetchUSFearGreed(), fetchKRFearGreed()]);
