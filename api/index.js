@@ -17,16 +17,17 @@ async function kvGet(key) {
       headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
     });
     const json = await res.json();
-    console.log('kvGet raw result type:', typeof json.result, 'value preview:', JSON.stringify(json.result)?.slice(0,100));
-    if (json.result === null || json.result === undefined) return null;
-    // 문자열이면 JSON 파싱 시도
-    if (typeof json.result === 'string') {
-      try { return JSON.parse(json.result); } catch(e) {
-        // 이중 직렬화된 경우
-        try { return JSON.parse(JSON.parse(json.result)); } catch(e2) { return null; }
+    let result = json.result;
+    if (result === null || result === undefined) return null;
+    // 배열이면 첫 번째 요소 사용
+    if (Array.isArray(result)) result = result[0];
+    // 문자열이면 JSON 파싱
+    if (typeof result === 'string') {
+      try { result = JSON.parse(result); } catch(e) {
+        try { result = JSON.parse(JSON.parse(result)); } catch(e2) { return null; }
       }
     }
-    return json.result;
+    return result;
   } catch(e) { console.warn('kvGet fail:', e.message); return null; }
 }
 
