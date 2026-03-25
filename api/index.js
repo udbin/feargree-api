@@ -113,8 +113,13 @@ module.exports = async function handler(req, res) {
       const now = new Date().toISOString();
       await kvSet('feargreed:lastclose:0001', { changePercent: kospiChg,  updatedAt: now });
       await kvSet('feargreed:lastclose:1001', { changePercent: kosdaqChg, updatedAt: now });
+      // 저장 후 바로 읽어서 확인
+      const check0001 = await kvGet('feargreed:lastclose:0001');
+      const check1001 = await kvGet('feargreed:lastclose:1001');
       console.log('종가 수동 세팅 — KOSPI:', kospiChg, 'KOSDAQ:', kosdaqChg);
-      return res.status(200).json({ success: true, message: '종가 저장 완료', kospi: kospiChg, kosdaq: kosdaqChg });
+      console.log('저장 확인 0001:', JSON.stringify(check0001));
+      console.log('저장 확인 1001:', JSON.stringify(check1001));
+      return res.status(200).json({ success: true, message: '종가 저장 완료', kospi: kospiChg, kosdaq: kosdaqChg, check: { kospi: check0001, kosdaq: check1001 } });
     }
 
     const [usData, krData] = await Promise.all([fetchUSFearGreed(), fetchKRFearGreed()]);
