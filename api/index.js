@@ -34,18 +34,28 @@ async function kvGet(key) {
 async function kvSet(key, value) {
   if (!REDIS_URL || !REDIS_TOKEN) return;
   try {
-    // Upstash REST API: POST /set/key with JSON body ["value"]
     const res = await fetch(`${REDIS_URL}/set/${key}`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${REDIS_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
+      headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify([JSON.stringify(value)])
     });
     const json = await res.json();
     console.log('kvSet result:', JSON.stringify(json));
   } catch(e) { console.warn('kvSet fail:', e.message); }
+}
+
+// 단순 문자열로 저장 (lastclose 전용)
+async function kvSetSimple(key, value) {
+  if (!REDIS_URL || !REDIS_TOKEN) return;
+  try {
+    const res = await fetch(`${REDIS_URL}/set/${key}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(JSON.stringify(value))
+    });
+    const json = await res.json();
+    console.log('kvSetSimple result:', JSON.stringify(json));
+  } catch(e) { console.warn('kvSetSimple fail:', e.message); }
 }
 
 function todayKST() {
@@ -112,8 +122,8 @@ module.exports = async function handler(req, res) {
       const kospiChg  = parseFloat(req.query.kospi  || 0);
       const kosdaqChg = parseFloat(req.query.kosdaq || 0);
       const now = new Date().toISOString();
-      await kvSet('feargreed:lastclose:0001', { changePercent: kospiChg,  updatedAt: now });
-      await kvSet('feargreed:lastclose:1001', { changePercent: kosdaqChg, updatedAt: now });
+      await kvSetSimple('feargreed:lastclose:0001', { changePercent: kospiChg,  updatedAt: now });
+      await kvSetSimple('feargreed:lastclose:1001', { changePercent: kosdaqChg, updatedAt: now });
       // 저장 후 바로 읽어서 확인
       const check0001 = await kvGet('feargreed:lastclose:0001');
       const check1001 = await kvGet('feargreed:lastclose:1001');
@@ -335,7 +345,7 @@ async function fetchKISIndex(token, code) {
 
   if (isMarketOpen() && Math.abs(changePercent) > 0.001) {
     // 장중에 유효한 등락률이 있으면 Redis에 저장
-    await kvSet(redisKey, { changePercent, updatedAt: new Date().toISOString() });
+    await kvSetSimple(redisKey, { changePercent, updatedAt: new Date().toISOString() });
     console.log(`장중 종가 저장 [${code}]:`, changePercent);
   } else if (Math.abs(changePercent) < 0.001) {
     // 등락률이 0이면 Redis에서 마지막 저장된 종가 등락률 복원
