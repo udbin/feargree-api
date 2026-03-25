@@ -231,8 +231,21 @@ async function getKISToken() {
 
 async function fetchKRFearGreed() {
   try {
-    const token = await getKISToken();
-    const [kospi, kosdaq] = await Promise.all([fetchKISIndex(token,'0001'),fetchKISIndex(token,'1001')]);
+    let token, kospi, kosdaq;
+    try {
+      token = await getKISToken();
+      [kospi, kosdaq] = await Promise.all([fetchKISIndex(token,'0001'), fetchKISIndex(token,'1001')]);
+    } catch(kisErr) {
+      console.warn('KIS 실패, Redis 종가로 fallback:', kisErr.message);
+      // KIS 토큰 실패 시 Redis에서 마지막 종가 복원
+      const saved0001 = await kvGet('feargreed:lastclose:0001');
+      const saved1001 = await kvGet('feargreed:lastclose:1001');
+      const kospiChg  = saved0001 ? saved0001.changePercent : 0;
+      const kosdaqChg = saved1001 ? saved1001.changePercent : 0;
+      console.log('Redis fallback — KOSPI:', kospiChg, 'KOSDAQ:', kosdaqChg);
+      kospi  = { price: 0, change: 0, changePercent: kospiChg };
+      kosdaq = { price: 0, change: 0, changePercent: kosdaqChg };
+    }
     let vkospiVal = 20;
     try { vkospiVal = await fetchVKOSPI(); } catch(e){ console.warn('VKOSPI all fail:', e.message); }
 
