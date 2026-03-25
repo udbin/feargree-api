@@ -357,16 +357,18 @@ async function fetchKISIndex(token, code) {
   const redisKey = `feargreed:lastclose:${code}`;
 
   if (isMarketOpen() && Math.abs(changePercent) > 0.001) {
-    // 장중에 유효한 등락률이 있으면 Redis에 저장
+    // 장중에 유효한 등락률 → Redis에 저장
     await kvSetSimple(redisKey, { changePercent, updatedAt: new Date().toISOString() });
     console.log(`장중 종가 저장 [${code}]:`, changePercent);
   } else if (Math.abs(changePercent) < 0.001) {
-    // 등락률이 0이면 Redis에서 마지막 저장된 종가 등락률 복원
+    // 등락률이 0이면 (장외 시간이거나 KIS가 0 반환) → Redis에서 복원
     try {
       const saved = await kvGet(redisKey);
-      if (saved && Math.abs(saved.changePercent) > 0.001) {
+      if (saved && typeof saved === 'object' && Math.abs(saved.changePercent) > 0.001) {
         changePercent = saved.changePercent;
-        console.log(`장외시간 Redis 종가 복원 [${code}]:`, changePercent, '(저장시각:', saved.updatedAt, ')');
+        console.log(`Redis 종가 복원 성공 [${code}]:`, changePercent);
+      } else {
+        console.log(`Redis 종가 없음 [${code}]:`, JSON.stringify(saved));
       }
     } catch(e) {
       console.warn(`Redis 종가 복원 실패 [${code}]:`, e.message);
