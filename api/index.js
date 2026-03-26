@@ -363,15 +363,22 @@ async function fetchKISIndex(token, code) {
   } else if (Math.abs(changePercent) < 0.001) {
     // 등락률이 0이면 (장외 시간이거나 KIS가 0 반환) → Redis에서 복원
     try {
-      const saved = await kvGet(redisKey);
-      if (saved && typeof saved === 'object' && Math.abs(saved.changePercent) > 0.001) {
+      const rawSaved = await kvGet(redisKey);
+      console.log(`kvGet raw [${code}]:`, typeof rawSaved, JSON.stringify(rawSaved));
+      let saved = rawSaved;
+      // 문자열로 왔으면 한 번 더 파싱
+      if (typeof saved === 'string') {
+        try { saved = JSON.parse(saved); } catch(e) {}
+      }
+      console.log(`kvGet parsed [${code}]:`, typeof saved, JSON.stringify(saved));
+      if (saved && saved.changePercent !== undefined && Math.abs(saved.changePercent) > 0.001) {
         changePercent = saved.changePercent;
         console.log(`Redis 종가 복원 성공 [${code}]:`, changePercent);
       } else {
-        console.log(`Redis 종가 없음 [${code}]:`, JSON.stringify(saved));
+        console.log(`Redis 종가 복원 실패 [${code}]: 값 없음 또는 0`);
       }
     } catch(e) {
-      console.warn(`Redis 종가 복원 실패 [${code}]:`, e.message);
+      console.warn(`Redis 종가 복원 예외 [${code}]:`, e.message);
     }
   }
 
