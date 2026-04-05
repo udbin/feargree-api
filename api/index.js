@@ -111,7 +111,7 @@ async function saveHistory(usScore, krScore) {
     let history = await kvGet('feargreed:history') || [];
     console.log('saveHistory: history length after kvGet:', history.length);
 
-    if (true) // 강제시드 - 확인후 원복 {
+    if (!Array.isArray(history) || history.length < 5) {
       console.log('Running seed with real data...');
       return await seedHistory(usScore, krScore);
     }
