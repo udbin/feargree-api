@@ -67,15 +67,40 @@ function daysAgoKST(n) {
 
 async function seedHistory(todayUs, todayKr) {
   try {
-    const seedUs = [58,60,62,59,55,52,50,53,56,54,51,48,45,43,42,44,46,43,40,38,37,35,33,31,30,28,27,26,25];
-    const seedKr = [62,64,65,63,60,58,57,59,61,59,56,54,52,50,51,53,55,52,49,47,46,44,43,42,43,45,47,49,54];
-    const history = [];
-    for (let i = 29; i >= 1; i--) {
-      history.push({ date: daysAgoKST(i), us: seedUs[29-i] ?? todayUs, kr: seedKr[29-i] ?? todayKr });
+    // 실제 관측 데이터 (2026년 3월 13일 ~ 현재)
+    const realHistory = [
+      { date: '2026-03-13', us: 21, kr: 42 },
+      { date: '2026-03-14', us: 20, kr: 40 },
+      { date: '2026-03-16', us: 20, kr: 47 },
+      { date: '2026-03-17', us: 23, kr: 66 },
+      { date: '2026-03-18', us: 21, kr: 52 },
+      { date: '2026-03-19', us: 18, kr: 34 },
+      { date: '2026-03-20', us: 17, kr: 50 },
+      { date: '2026-03-21', us: 15, kr: 52 },
+      { date: '2026-03-23', us: 15, kr: 47 },
+      { date: '2026-03-24', us: 16, kr: 70 },
+      { date: '2026-03-25', us: 14, kr: 61 },
+      { date: '2026-03-26', us: 19, kr: 42 },
+      { date: '2026-03-27', us: 18, kr: 28 },
+      { date: '2026-03-29', us: 10, kr: 42 },
+      { date: '2026-03-30', us: 10, kr: 16 },
+      { date: '2026-03-31', us: 9,  kr: 21 },
+      { date: '2026-04-01', us: 15, kr: 22 },
+      { date: '2026-04-02', us: 16, kr: 79 },
+      { date: '2026-04-03', us: 15, kr: 23 },
+      { date: '2026-04-05', us: 19, kr: 63 },
+    ];
+    // 오늘 날짜 데이터 업데이트 또는 추가
+    const today = todayKST();
+    const idx = realHistory.findIndex(h => h.date === today);
+    if (idx >= 0) {
+      realHistory[idx] = { date: today, us: todayUs, kr: todayKr };
+    } else {
+      realHistory.push({ date: today, us: todayUs, kr: todayKr });
     }
-    history.push({ date: todayKST(), us: todayUs, kr: todayKr });
+    const history = realHistory.slice(-30);
     await kvSet('feargreed:history', history);
-    console.log('Seed done, length:', history.length);
+    console.log('Seed done with real data, length:', history.length);
     return history;
   } catch(e) { console.warn('seed fail:', e.message); return []; }
 }
@@ -86,8 +111,8 @@ async function saveHistory(usScore, krScore) {
     let history = await kvGet('feargreed:history') || [];
     console.log('saveHistory: history length after kvGet:', history.length);
 
-    if (!Array.isArray(history) || history.length < 5) {
-      console.log('Running seed...');
+    if (true) // 강제시드 - 확인후 원복 {
+      console.log('Running seed with real data...');
       return await seedHistory(usScore, krScore);
     }
     const idx = history.findIndex(h => h.date === today);
