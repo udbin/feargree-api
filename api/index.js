@@ -182,7 +182,7 @@ async function fetchUSFearGreed() {
           {name:'변동성 (VIX)', value:Math.round(vixScore)},
           {name:'풋/콜 비율',   value:Math.round(s*0.9)},
           {name:'정크본드 수요',value:Math.min(100,Math.round(s*1.1))},
-          {name:'안전자산 수요',value:Math.round(s*0.85)},
+          {name:'위험자산 선호도',value:Math.round(s*0.85)},
           {name:'주가 강도',    value:Math.min(100,Math.round(s*1.05))},
           {name:'주가 폭',      value:Math.round(s*0.95)}
         ], source:'CNN Fear & Greed Index'};
@@ -209,7 +209,7 @@ async function fetchUSFallback() {
         {name:'변동성 (VIX)', value:Math.round(vixScore)},
         {name:'풋/콜 비율',   value:Math.round((momentumScore+vixScore)/2)},
         {name:'정크본드 수요',value:Math.round(junkScore)},
-        {name:'안전자산 수요',value:Math.round(safeHaven)},
+        {name:'위험자산 선호도',value:Math.round(safeHaven)},
         {name:'주가 강도',    value:Math.min(100,Math.round(momentumScore*1.05))},
         {name:'주가 폭',      value:Math.round(momentumScore*0.95)}
       ], source:'Yahoo Finance (VIX·S&P500·HYG·TLT)'};
@@ -334,7 +334,7 @@ async function fetchKRFearGreed() {
         {name:'KOSDAQ 등락률', value:Math.round(kosdaqScore),raw:parseFloat(kosdaq.changePercent.toFixed(2)),                         unit:'%',  barMax:5  },
         {name:'주가 강도',     value:Math.round(strength),  raw:parseFloat(((kospi.changePercent+kosdaq.changePercent)/2).toFixed(2)),unit:'%',  barMax:5  },
         {name:'변동성 (VKOSPI)',value:Math.round(volatility),raw:parseFloat(vkospiVal.toFixed(1)),                                   unit:'',   barMax:80 },
-        {name:'안전자산 수요', value:Math.round(safeHaven), raw:parseFloat(safeHavenSpread.toFixed(2)),                               unit:'%p', barMax:10 },
+        {name:'위험자산 선호도', value:Math.round(safeHaven), raw:parseFloat(safeHavenSpread.toFixed(2)),                               unit:'%p', barMax:10 },
         {name:'KOSPI 추세',    value:Math.round(trend),     raw:parseFloat(kospi.changePercent.toFixed(2)),                          unit:'%',  barMax:5  },
         {name:'종합 심리',     value:Math.round(sentiment), raw:Math.round(sentiment),                                               unit:'',   barMax:100}
       ],
