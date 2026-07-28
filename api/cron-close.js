@@ -46,8 +46,6 @@ async function fetchKISIndexRaw(token, code) {
 }
 
 module.exports = async function handler(req, res) {
-  // Vercel Cron이 아닌 외부에서 함부로 호출 못하게 최소한의 보호
-  // (선택) 환경변수 CRON_SECRET을 설정해두면 Vercel이 자동으로 Authorization 헤더에 넣어줌
   const authHeader = req.headers['authorization'];
   if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ success: false, error: 'unauthorized' });
@@ -62,8 +60,6 @@ module.exports = async function handler(req, res) {
 
     const now = new Date().toISOString();
 
-    // 장마감 직후 호출이므로 값이 정상적이면(0이 아니면) 그대로 "오늘의 최종 종가"로 저장
-    // 혹시 이 시점에도 0이 오면(공휴일 등) 기존 저장값을 건드리지 않고 건너뜀
     const results = {};
     if (Math.abs(kospi.changePercent) > 0.001) {
       await kvSetSimple('feargreed:lastclose:0001', { changePercent: kospi.changePercent, updatedAt: now });
@@ -78,10 +74,69 @@ module.exports = async function handler(req, res) {
       results.kosdaq = 'skipped (0 or holiday)';
     }
 
-    console.log('cron-close 실행 완료:', JSON.stringify(results));
-    return res.status(200).json({ success: true, timestamp: now, saved: results });
+    // ============================================================
+    // [신규] 30일 히스토리(오늘 점수) 저장 — 하루 1번, 여기서만 수행
+    // 저장 전용 API(/api)를 호출해서 오늘의 US/KR 최종 점수를 받아온다
+    // ============================================================
+    let historyResult = 'skipped';
+    try {
+      const scoreRes = await fetch('https://feargree-api.vercel.app/api');
+      const scoreData = await scoreRes.json();
+      if (scoreData && scoreData.success) {
+        await saveHistoryEntry(scoreData.us.score, scoreData.kr.score);
+        historyResult = { us: scoreData.us.score, kr: scoreData.kr.score };
+      }
+    } catch (e) {
+      console.warn('history 저장 실패:', e.message);
+      historyResult = 'error: ' + e.message;
+    }
+
+    console.log('cron-close 실행 완료:', JSON.stringify(results), 'history:', JSON.stringify(historyResult));
+    return res.status(200).json({ success: true, timestamp: now, saved: results, history: historyResult });
   } catch (e) {
     console.error('cron-close 실패:', e.message);
     return res.status(500).json({ success: false, error: e.message });
   }
 };
+
+// ── 히스토리(30일 추이) 하루 1회 저장 ──
+function todayKST() {
+  return new Date(Date.now() + 9*3600000).toISOString().slice(0,10);
+}
+
+async function kvGetSimple(key) {
+  const res = await fetch(`${REDIS_URL}/get/${key}`, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
+  if (!res.ok) throw new Error(`kvGet HTTP ${res.status}`);
+  const json = await res.json();
+  let result = json.result;
+  if (result === null || result === undefined) return null;
+  if (Array.isArray(result)) result = result[0];
+  if (typeof result === 'string') {
+    try { result = JSON.parse(result); } catch(e) {
+      try { result = JSON.parse(JSON.parse(result)); } catch(e2) { return null; }
+    }
+  }
+  return result;
+}
+
+async function kvSetHistory(value) {
+  const res = await fetch(`${REDIS_URL}/set/feargreed:history`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify([JSON.stringify(value)])
+  });
+  if (!res.ok) throw new Error(`kvSet HTTP ${res.status}`);
+  return res.json();
+}
+
+async function saveHistoryEntry(usScore, krScore) {
+  const today = todayKST();
+  let history = await kvGetSimple('feargreed:history') || [];
+  if (!Array.isArray(history)) history = [];
+  const idx = history.findIndex(h => h.date === today);
+  if (idx >= 0) { history[idx] = { date: today, us: usScore, kr: krScore }; }
+  else { history.push({ date: today, us: usScore, kr: krScore }); }
+  history = history.slice(-30);
+  await kvSetHistory(history);
+  return history;
+}
