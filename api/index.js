@@ -397,10 +397,17 @@ async function fetchKISIndex(token, code) {
 
   const redisKey = `feargreed:lastclose:${code}`;
 
-  if (isMarketOpen() && Math.abs(changePercent) > 0.001) {
-    await kvSetSimple(redisKey, { changePercent, updatedAt: new Date().toISOString() });
-    console.log(`장중 종가 저장 [${code}]:`, changePercent);
-  } else if (Math.abs(changePercent) < 0.001) {
+  // ============================================================
+  // [변경됨] 이 함수(fetchKISIndex)는 더 이상 Redis에 "저장"하지 않는다.
+  // 저장은 오직 cron-close.js(매일 장마감 직후 1회)만 담당한다.
+  // 이유: 서킷브레이커·거래정지 등으로 장중 지수가 순간적으로 이상하게
+  //       찍히는 경우, 방문자가 그 순간 접속하면 그 튄 값이 그대로 저장되어
+  //       cron-close가 저장한 정확한 종가를 덮어써버리는 충돌이 있었음.
+  // 이 함수는 이제 "장이 열려서 실제로 값이 나오면 그대로 보여주고,
+  //   장전이라 0이 나오면 Redis에서 최근 저장된 종가를 읽어와서 보여주기"만 한다.
+  // ============================================================
+  if (Math.abs(changePercent) < 0.001) {
+    // 장전(또는 장중 순간적 0)이면 → 가장 최근 저장된 종가로 대체 (읽기 전용)
     try {
       const rawSaved = await kvGet(redisKey);
       let saved = rawSaved;
@@ -415,6 +422,9 @@ async function fetchKISIndex(token, code) {
       console.warn(`Redis 종가 복원 예외 [${code}]:`, e.message);
     }
   }
+  // 장중에 정상적인 값이 나온 경우(changePercent가 0이 아님)는
+  // 그 값을 그대로 화면에 보여주기만 하고, Redis에는 쓰지 않는다.
+  // (실제 하루의 최종 확정치 저장은 cron-close.js가 장마감 후 전담)
 
   return { price, change, changePercent };
 }
