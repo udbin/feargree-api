@@ -12,47 +12,55 @@ let kisTokenExpiry = 0;
 // ── Upstash Redis REST ──
 async function kvGet(key) {
   if (!REDIS_URL || !REDIS_TOKEN) { console.warn('Redis env missing'); return null; }
-  try {
-    const res = await fetch(`${REDIS_URL}/get/${key}`, {
-      headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
-    });
-    const json = await res.json();
-    let result = json.result;
-    if (result === null || result === undefined) return null;
-    if (Array.isArray(result)) result = result[0];
-    if (typeof result === 'string') {
-      try { result = JSON.parse(result); } catch(e) {
-        try { result = JSON.parse(JSON.parse(result)); } catch(e2) { return null; }
-      }
+  const res = await fetch(`${REDIS_URL}/get/${key}`, {
+    headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(()=> '');
+    throw new Error(`kvGet HTTP ${res.status}: ${errText}`);
+  }
+  const json = await res.json();
+  let result = json.result;
+  if (result === null || result === undefined) return null;
+  if (Array.isArray(result)) result = result[0];
+  if (typeof result === 'string') {
+    try { result = JSON.parse(result); } catch(e) {
+      try { result = JSON.parse(JSON.parse(result)); } catch(e2) { return null; }
     }
-    return result;
-  } catch(e) { console.warn('kvGet fail:', e.message); return null; }
+  }
+  return result;
 }
 
 async function kvSet(key, value) {
-  if (!REDIS_URL || !REDIS_TOKEN) return;
-  try {
-    const res = await fetch(`${REDIS_URL}/set/${key}`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify([JSON.stringify(value)])
-    });
-    const json = await res.json();
-    console.log('kvSet result:', JSON.stringify(json));
-  } catch(e) { console.warn('kvSet fail:', e.message); }
+  if (!REDIS_URL || !REDIS_TOKEN) { throw new Error('Redis env missing (KV_REST_API_URL/KV_REST_API_TOKEN)'); }
+  const res = await fetch(`${REDIS_URL}/set/${key}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify([JSON.stringify(value)])
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(()=> '');
+    throw new Error(`kvSet HTTP ${res.status}: ${errText}`);
+  }
+  const json = await res.json();
+  console.log('kvSet result:', JSON.stringify(json));
+  return json;
 }
 
 async function kvSetSimple(key, value) {
-  if (!REDIS_URL || !REDIS_TOKEN) return;
-  try {
-    const res = await fetch(`${REDIS_URL}/set/${key}`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(JSON.stringify(value))
-    });
-    const json = await res.json();
-    console.log('kvSetSimple result:', JSON.stringify(json));
-  } catch(e) { console.warn('kvSetSimple fail:', e.message); }
+  if (!REDIS_URL || !REDIS_TOKEN) { throw new Error('Redis env missing (KV_REST_API_URL/KV_REST_API_TOKEN)'); }
+  const res = await fetch(`${REDIS_URL}/set/${key}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(JSON.stringify(value))
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(()=> '');
+    throw new Error(`kvSetSimple HTTP ${res.status}: ${errText}`);
+  }
+  const json = await res.json();
+  console.log('kvSetSimple result:', JSON.stringify(json));
+  return json;
 }
 
 function todayKST() {
