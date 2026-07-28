@@ -147,7 +147,16 @@ module.exports = async function handler(req, res) {
     }
 
     const [usData, krData] = await Promise.all([fetchUSFearGreed(), fetchKRFearGreed()]);
-    const history = await saveHistory(usData.score, krData.score);
+
+    // ============================================================
+    // [변경됨] 방문할 때마다 히스토리를 "쓰지" 않고 "읽기만" 한다.
+    // 실제 저장(그날의 최종 점수 기록)은 cron-close.js가 장마감 후
+    // 하루 1번만 수행한다. (Redis 요청 한도 절약이 핵심 목적)
+    // ============================================================
+    let history = [];
+    try {
+      history = await kvGet('feargreed:history') || [];
+    } catch(e) { console.warn('history read fail:', e.message); history = []; }
 
     return res.status(200).json({
       success: true,
