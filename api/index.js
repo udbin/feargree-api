@@ -19,9 +19,7 @@ async function kvGet(key) {
     const json = await res.json();
     let result = json.result;
     if (result === null || result === undefined) return null;
-    // 배열이면 첫 번째 요소 사용
     if (Array.isArray(result)) result = result[0];
-    // 문자열이면 JSON 파싱
     if (typeof result === 'string') {
       try { result = JSON.parse(result); } catch(e) {
         try { result = JSON.parse(JSON.parse(result)); } catch(e2) { return null; }
@@ -44,7 +42,6 @@ async function kvSet(key, value) {
   } catch(e) { console.warn('kvSet fail:', e.message); }
 }
 
-// 단순 문자열로 저장 (lastclose 전용)
 async function kvSetSimple(key, value) {
   if (!REDIS_URL || !REDIS_TOKEN) return;
   try {
@@ -61,13 +58,9 @@ async function kvSetSimple(key, value) {
 function todayKST() {
   return new Date(Date.now() + 9*3600000).toISOString().slice(0,10);
 }
-function daysAgoKST(n) {
-  return new Date(Date.now() + 9*3600000 - n*86400000).toISOString().slice(0,10);
-}
 
 async function seedHistory(todayUs, todayKr) {
   try {
-    // 실제 관측 데이터 (2026년 3월 13일 ~ 현재)
     const realHistory = [
       { date: '2026-03-13', us: 21, kr: 42 },
       { date: '2026-03-14', us: 20, kr: 40 },
@@ -90,14 +83,10 @@ async function seedHistory(todayUs, todayKr) {
       { date: '2026-04-03', us: 15, kr: 23 },
       { date: '2026-04-05', us: 19, kr: 63 },
     ];
-    // 오늘 날짜 데이터 업데이트 또는 추가
     const today = todayKST();
     const idx = realHistory.findIndex(h => h.date === today);
-    if (idx >= 0) {
-      realHistory[idx] = { date: today, us: todayUs, kr: todayKr };
-    } else {
-      realHistory.push({ date: today, us: todayUs, kr: todayKr });
-    }
+    if (idx >= 0) { realHistory[idx] = { date: today, us: todayUs, kr: todayKr }; }
+    else { realHistory.push({ date: today, us: todayUs, kr: todayKr }); }
     const history = realHistory.slice(-30);
     await kvSet('feargreed:history', history);
     console.log('Seed done with real data, length:', history.length);
@@ -110,17 +99,13 @@ async function saveHistory(usScore, krScore) {
     const today = todayKST();
     let history = await kvGet('feargreed:history') || [];
     console.log('saveHistory: history length after kvGet:', history.length);
-
     if (!Array.isArray(history) || history.length < 5) {
       console.log('Running seed with real data...');
       return await seedHistory(usScore, krScore);
     }
     const idx = history.findIndex(h => h.date === today);
-    if (idx >= 0) {
-      history[idx] = { date: today, us: usScore, kr: krScore };
-    } else {
-      history.push({ date: today, us: usScore, kr: krScore });
-    }
+    if (idx >= 0) { history[idx] = { date: today, us: usScore, kr: krScore }; }
+    else { history.push({ date: today, us: usScore, kr: krScore }); }
     history = history.slice(-30);
     await kvSet('feargreed:history', history);
     return history;
@@ -142,19 +127,14 @@ module.exports = async function handler(req, res) {
       console.log('History deleted!');
     }
 
-    // 종가 수동 세팅: ?setclose=1&kospi=1.56&kosdaq=3.40
     if (req.query && req.query.setclose === '1') {
       const kospiChg  = parseFloat(req.query.kospi  || 0);
       const kosdaqChg = parseFloat(req.query.kosdaq || 0);
       const now = new Date().toISOString();
       await kvSetSimple('feargreed:lastclose:0001', { changePercent: kospiChg,  updatedAt: now });
       await kvSetSimple('feargreed:lastclose:1001', { changePercent: kosdaqChg, updatedAt: now });
-      // 저장 후 바로 읽어서 확인
       const check0001 = await kvGet('feargreed:lastclose:0001');
       const check1001 = await kvGet('feargreed:lastclose:1001');
-      console.log('종가 수동 세팅 — KOSPI:', kospiChg, 'KOSDAQ:', kosdaqChg);
-      console.log('저장 확인 0001:', JSON.stringify(check0001));
-      console.log('저장 확인 1001:', JSON.stringify(check1001));
       return res.status(200).json({ success: true, message: '종가 저장 완료', kospi: kospiChg, kosdaq: kosdaqChg, check: { kospi: check0001, kosdaq: check1001 } });
     }
 
@@ -254,6 +234,41 @@ async function getKISToken() {
   return kisToken;
 }
 
+// ============================================================
+// [신규 함수 1] KOSPI 20거래일 수익률 (Yahoo Finance 일별 종가)
+// ============================================================
+async function fetchKOSPI20DayReturn() {
+  const res = await fetch(
+    'https://query1.finance.yahoo.com/v8/finance/chart/%5EKS11?interval=1d&range=2mo',
+    { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } }
+  );
+  if (!res.ok) throw new Error(`Yahoo KOSPI history: ${res.status}`);
+  const data = await res.json();
+  const closesRaw = data.chart.result[0].indicators.quote[0].close;
+  const closes = closesRaw.filter(v => v !== null && v !== undefined);
+  if (closes.length < 21) throw new Error('KOSPI 20일 데이터 부족');
+  const latest = closes[closes.length - 1];
+  const past20 = closes[closes.length - 21];
+  return ((latest - past20) / past20) * 100;
+}
+
+// ============================================================
+// [신규 함수 2] 국고채 3년물 금리 (네이버 금융 금리 페이지, VKOSPI와 동일한 스크래핑 방식)
+// ============================================================
+async function fetchGovBond3YYield() {
+  const res = await fetch(
+    'https://finance.naver.com/marketindex/interestDailyQuote.naver?marketindexCd=IRR_GOVT03Y',
+    { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html', 'Accept-Language': 'ko-KR,ko;q=0.9' } }
+  );
+  if (!res.ok) throw new Error(`Naver bond yield: ${res.status}`);
+  const html = await res.text();
+  const m = html.match(/class="num"[^>]*>\s*([\d.]+)\s*<\/td>/) || html.match(/<td[^>]*>\s*([\d.]{4,6})\s*<\/td>/);
+  if (!m) throw new Error('국고채 금리 파싱 실패');
+  const yieldPct = parseFloat(m[1]);
+  if (isNaN(yieldPct) || yieldPct <= 0 || yieldPct > 15) throw new Error('국고채 금리 값 이상: ' + yieldPct);
+  return yieldPct;
+}
+
 async function fetchKRFearGreed() {
   try {
     let token, kospi, kosdaq;
@@ -262,7 +277,6 @@ async function fetchKRFearGreed() {
       [kospi, kosdaq] = await Promise.all([fetchKISIndex(token,'0001'), fetchKISIndex(token,'1001')]);
     } catch(kisErr) {
       console.warn('KIS 실패, Redis 종가로 fallback:', kisErr.message);
-      // KIS 토큰 실패 시 Redis에서 마지막 종가 복원
       const saved0001 = await kvGet('feargreed:lastclose:0001');
       const saved1001 = await kvGet('feargreed:lastclose:1001');
       const kospiChg  = saved0001 ? saved0001.changePercent : 0;
@@ -274,31 +288,34 @@ async function fetchKRFearGreed() {
     let vkospiVal = 20;
     try { vkospiVal = await fetchVKOSPI(); } catch(e){ console.warn('VKOSPI all fail:', e.message); }
 
-    // VKOSPI 기반 변동성 (비중 가장 높음 - 가장 신뢰도 높은 지표)
-    // VKOSPI 15=안정, 30=주의, 50=공포, 70=극단공포
     const volatility = Math.max(0, Math.min(100, (55 - vkospiVal) / (55 - 12) * 100));
-
-    // KOSPI 등락률 (핵심 지표)
     const momentum = normalize(kospi.changePercent, -4, 4);
-
-    // KOSDAQ 등락률 (보조 지표 - KOSPI와 독립적으로만 평가, 차이값 사용 안 함)
     const kosdaqScore = normalize(kosdaq.changePercent, -4, 4);
-
-    // 주가 강도 = KOSPI·KOSDAQ 평균
     const strength = normalize((kospi.changePercent + kosdaq.changePercent) / 2, -4, 4);
 
-    // 안전자산 수요 = KOSPI 하락 시 안전자산 수요 증가
-    const safeHaven = normalize(-kospi.changePercent, -4, 4);
+    // ============================================================
+    // [변경됨] 안전자산 수요 — 실제 국채 3년물 vs KOSPI 20일 수익률 스프레드
+    // 기존: normalize(-kospi.changePercent, -4, 4)  ← 당일 등락률 반전(가짜 계산) 이었던 부분
+    // ============================================================
+    let kospi20dReturn = 0;
+    let govBondYield = 2.5; // 조회 실패 시 폴백(최근 3년물 평균 근사치)
+    try {
+      kospi20dReturn = await fetchKOSPI20DayReturn();
+      govBondYield = await fetchGovBond3YYield();
+    } catch (e) {
+      console.warn('안전자산 수요 실제 데이터 조회 실패, 폴백 사용:', e.message);
+    }
+    const bondPeriodReturn = govBondYield * (20 / 252); // 연이율 → 20거래일 환산 수익률
+    const safeHavenSpread = kospi20dReturn - bondPeriodReturn;
+    const safeHaven = normalize(safeHavenSpread, -10, 10);
+    // ============================================================
 
-    // 추세 = KOSPI 방향성
     const trend = kospi.changePercent > 0
       ? Math.min(100, 50 + kospi.changePercent * 6)
       : Math.max(0, 50 + kospi.changePercent * 6);
 
-    // 종합 심리 = VKOSPI + 모멘텀 평균
     const sentiment = (volatility * 0.6 + momentum * 0.4);
 
-    // 최종 점수: VKOSPI 30% + KOSPI모멘텀 25% + 강도 15% + 추세 15% + KOSDAQ 10% + 안전자산 5%
     const score = Math.max(0, Math.min(100, Math.round(
       volatility  * 0.30 +
       momentum    * 0.25 +
@@ -313,13 +330,13 @@ async function fetchKRFearGreed() {
       kospi_price:kospi.price.toFixed(2), kospi_change:kospi.changePercent.toFixed(2),
       kosdaq_change:kosdaq.changePercent.toFixed(2), vkospi:vkospiVal.toFixed(2),
       indicators:[
-        {name:'KOSPI 등락률',  value:Math.round(momentum),  raw:parseFloat(kospi.changePercent.toFixed(2)),                                       unit:'%',  barMax:5  },
-        {name:'KOSDAQ 등락률', value:Math.round(kosdaqScore),raw:parseFloat(kosdaq.changePercent.toFixed(2)),                                      unit:'%',  barMax:5  },
-        {name:'주가 강도',     value:Math.round(strength),  raw:parseFloat(((kospi.changePercent+kosdaq.changePercent)/2).toFixed(2)),             unit:'%',  barMax:5  },
-        {name:'변동성 (VKOSPI)',value:Math.round(volatility),raw:parseFloat(vkospiVal.toFixed(1)),                                                unit:'',   barMax:80 },
-        {name:'안전자산 수요', value:Math.round(safeHaven), raw:parseFloat((-kospi.changePercent).toFixed(2)),                                    unit:'%',  barMax:5  },
-        {name:'KOSPI 추세',    value:Math.round(trend),     raw:parseFloat(kospi.changePercent.toFixed(2)),                                       unit:'%',  barMax:5  },
-        {name:'종합 심리',     value:Math.round(sentiment), raw:Math.round(sentiment),                                                            unit:'',   barMax:100}
+        {name:'KOSPI 등락률',  value:Math.round(momentum),  raw:parseFloat(kospi.changePercent.toFixed(2)),                          unit:'%',  barMax:5  },
+        {name:'KOSDAQ 등락률', value:Math.round(kosdaqScore),raw:parseFloat(kosdaq.changePercent.toFixed(2)),                         unit:'%',  barMax:5  },
+        {name:'주가 강도',     value:Math.round(strength),  raw:parseFloat(((kospi.changePercent+kosdaq.changePercent)/2).toFixed(2)),unit:'%',  barMax:5  },
+        {name:'변동성 (VKOSPI)',value:Math.round(volatility),raw:parseFloat(vkospiVal.toFixed(1)),                                   unit:'',   barMax:80 },
+        {name:'안전자산 수요', value:Math.round(safeHaven), raw:parseFloat(safeHavenSpread.toFixed(2)),                               unit:'%p', barMax:10 },
+        {name:'KOSPI 추세',    value:Math.round(trend),     raw:parseFloat(kospi.changePercent.toFixed(2)),                          unit:'%',  barMax:5  },
+        {name:'종합 심리',     value:Math.round(sentiment), raw:Math.round(sentiment),                                               unit:'',   barMax:100}
       ],
       source:'한국투자증권 Open API'
     };
@@ -356,14 +373,13 @@ async function fetchVKOSPI() {
 }
 
 function isMarketOpen() {
-  // KST = UTC+9
   const now = new Date();
   const kstHour = (now.getUTCHours() + 9) % 24;
   const kstMin  = now.getUTCMinutes();
-  const kstDay  = new Date(now.getTime() + 9*3600*1000).getUTCDay(); // 0=일,6=토
+  const kstDay  = new Date(now.getTime() + 9*3600*1000).getUTCDay();
   if (kstDay === 0 || kstDay === 6) return false;
   const kstTotal = kstHour * 60 + kstMin;
-  return kstTotal >= 9*60 && kstTotal < 15*60+30; // 09:00~15:30
+  return kstTotal >= 9*60 && kstTotal < 15*60+30;
 }
 
 async function fetchKISIndex(token, code) {
@@ -382,20 +398,13 @@ async function fetchKISIndex(token, code) {
   const redisKey = `feargreed:lastclose:${code}`;
 
   if (isMarketOpen() && Math.abs(changePercent) > 0.001) {
-    // 장중에 유효한 등락률 → Redis에 저장
     await kvSetSimple(redisKey, { changePercent, updatedAt: new Date().toISOString() });
     console.log(`장중 종가 저장 [${code}]:`, changePercent);
   } else if (Math.abs(changePercent) < 0.001) {
-    // 등락률이 0이면 (장외 시간이거나 KIS가 0 반환) → Redis에서 복원
     try {
       const rawSaved = await kvGet(redisKey);
-      console.log(`kvGet raw [${code}]:`, typeof rawSaved, JSON.stringify(rawSaved));
       let saved = rawSaved;
-      // 문자열로 왔으면 한 번 더 파싱
-      if (typeof saved === 'string') {
-        try { saved = JSON.parse(saved); } catch(e) {}
-      }
-      console.log(`kvGet parsed [${code}]:`, typeof saved, JSON.stringify(saved));
+      if (typeof saved === 'string') { try { saved = JSON.parse(saved); } catch(e) {} }
       if (saved && saved.changePercent !== undefined && Math.abs(saved.changePercent) > 0.001) {
         changePercent = saved.changePercent;
         console.log(`Redis 종가 복원 성공 [${code}]:`, changePercent);
