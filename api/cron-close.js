@@ -110,20 +110,24 @@ async function kvGetSimple(key) {
   const json = await res.json();
   let result = json.result;
   if (result === null || result === undefined) return null;
-  if (Array.isArray(result)) result = result[0];
-  if (typeof result === 'string') {
-    try { result = JSON.parse(result); } catch(e) {
-      try { result = JSON.parse(JSON.parse(result)); } catch(e2) { return null; }
+  // 과거에 이중으로 감싸져 저장된 값도 최대 5단계까지 풀어서 실제 값을 꺼낸다
+  for (let i = 0; i < 5; i++) {
+    let changed = false;
+    if (Array.isArray(result) && result.length === 1) { result = result[0]; changed = true; }
+    if (typeof result === 'string') {
+      try { result = JSON.parse(result); changed = true; } catch(e) {}
     }
+    if (!changed) break;
   }
   return result;
 }
 
 async function kvSetHistory(value) {
+  // [변경됨] 배열로 감싸지 않고 문자열 하나로 저장 (kvSetSimple과 동일 방식)
   const res = await fetch(`${REDIS_URL}/set/feargreed:history`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify([JSON.stringify(value)])
+    body: JSON.stringify(JSON.stringify(value))
   });
   if (!res.ok) throw new Error(`kvSet HTTP ${res.status}`);
   return res.json();
