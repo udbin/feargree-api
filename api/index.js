@@ -156,6 +156,28 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ success: true, message: '종가 저장 완료', kospi: kospiChg, kosdaq: kosdaqChg, check: { kospi: check0001, kosdaq: check1001 } });
     }
 
+    // ============================================================
+    // [신규] 30일 히스토리 특정 날짜 수동 채우기
+    // 사용법: ?sethistory=1&date=2026-07-13&us=49&kr=35
+    // ============================================================
+    if (req.query && req.query.sethistory === '1') {
+      const date = req.query.date;
+      const usScore = parseInt(req.query.us || '0', 10);
+      const krScore = parseInt(req.query.kr || '0', 10);
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ success: false, error: 'date는 YYYY-MM-DD 형식으로 넣어주세요. 예: date=2026-07-13' });
+      }
+      let history = await kvGet('feargreed:history') || [];
+      if (!Array.isArray(history)) history = [];
+      const idx = history.findIndex(h => h.date === date);
+      if (idx >= 0) { history[idx] = { date, us: usScore, kr: krScore }; }
+      else { history.push({ date, us: usScore, kr: krScore }); }
+      history.sort((a, b) => a.date.localeCompare(b.date));
+      history = history.slice(-60); // 백필 중이라 넉넉히 60개까지 보관, 이후 자연스럽게 최근 30개 위주로 운용됨
+      await kvSet('feargreed:history', history);
+      return res.status(200).json({ success: true, message: '히스토리 저장 완료', date, us: usScore, kr: krScore, total: history.length });
+    }
+
     const [usData, krData] = await Promise.all([fetchUSFearGreed(), fetchKRFearGreed()]);
 
     // ============================================================
