@@ -22,21 +22,31 @@ async function kvGet(key) {
   const json = await res.json();
   let result = json.result;
   if (result === null || result === undefined) return null;
-  if (Array.isArray(result)) result = result[0];
-  if (typeof result === 'string') {
-    try { result = JSON.parse(result); } catch(e) {
-      try { result = JSON.parse(JSON.parse(result)); } catch(e2) { return null; }
+  // ============================================================
+  // [강화됨] 과거에 이중으로 감싸져 저장된 값(배열 안에 문자열, 그 문자열
+  // 안에 또 JSON 등)도 최대 5단계까지 풀어서 실제 값을 꺼낸다.
+  // ============================================================
+  for (let i = 0; i < 5; i++) {
+    let changed = false;
+    if (Array.isArray(result) && result.length === 1) {
+      result = result[0];
+      changed = true;
     }
+    if (typeof result === 'string') {
+      try { result = JSON.parse(result); changed = true; } catch(e) { /* 더 이상 JSON 아님, 종료 */ }
+    }
+    if (!changed) break;
   }
   return result;
 }
 
 async function kvSet(key, value) {
   if (!REDIS_URL || !REDIS_TOKEN) { throw new Error('Redis env missing (KV_REST_API_URL/KV_REST_API_TOKEN)'); }
+  // [변경됨] 배열로 감싸지 않고, kvSetSimple과 동일한 방식(문자열 하나)으로 저장
   const res = await fetch(`${REDIS_URL}/set/${key}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify([JSON.stringify(value)])
+    body: JSON.stringify(JSON.stringify(value))
   });
   if (!res.ok) {
     const errText = await res.text().catch(()=> '');
