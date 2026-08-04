@@ -60,6 +60,11 @@ async function kvSetSimple(key, value) {
 }
 
 async function getKISToken() {
+  const cached = await kvGetSimple('semi:paptoken');
+  if (cached && cached.token && cached.expiresAt && Date.now() < cached.expiresAt) {
+    return cached.token;
+  }
+
   const res = await fetch(`${KIS_BASE}/oauth2/tokenP`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -69,7 +74,11 @@ async function getKISToken() {
     const t = await res.text().catch(() => '');
     throw new Error(`토큰 발급 실패: ${res.status} ${t}`);
   }
-  return (await res.json()).access_token;
+  const data = await res.json();
+  const expiresInSec = data.expires_in || 86400;
+  const expiresAt = Date.now() + (expiresInSec - 600) * 1000;
+  await kvSetSimple('semi:paptoken', { token: data.access_token, expiresAt });
+  return data.access_token;
 }
 
 // API ① 현재가 + 52주 고저
