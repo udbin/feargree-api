@@ -1,8 +1,15 @@
 {
   "crons": [
-    {
-      "path": "/api/cron-close",
-      "schedule": "35 6 * * 1-5"
-    }
+    { "path": "/api/cron-close", "schedule": "35 6 * * 1-5" },
+
+    { "path": "/api/sector-check?sector=semi",    "schedule": "35 0 * * 1-5" },
+    { "path": "/api/sector-check?sector=battery", "schedule": "37 0 * * 1-5" },
+    { "path": "/api/sector-check?sector=bio",     "schedule": "39 0 * * 1-5" },
+    { "path": "/api/sector-check?sector=defense", "schedule": "41 0 * * 1-5" },
+
+    { "path": "/api/sector-check?sector=semi",    "schedule": "35 6 * * 1-5" },
+    { "path": "/api/sector-check?sector=battery", "schedule": "37 6 * * 1-5" },
+    { "path": "/api/sector-check?sector=bio",     "schedule": "39 6 * * 1-5" },
+    { "path": "/api/sector-check?sector=defense", "schedule": "41 6 * * 1-5" }
   ]
 }
