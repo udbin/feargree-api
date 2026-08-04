@@ -1,14 +1,16 @@
-// api/semi-check-v2.js - 반도체 섹터 5-Factor 공포탐욕지수 (통합 버전)
-// 사용법: 배포 후 브라우저에서 접속
-//   https://feargree-api.vercel.app/api/semi-check-v2
+// api/semi-check.js - 반도체 섹터 5-Factor 공포탐욕지수 (실전 도메인 단일 키 버전)
+// 사용법: https://feargree-api.vercel.app/api/semi-check
 //
-// 종목당 API 3개(현재가/52주, 20일 일별시세, 외인기관 추정가집계) 호출
-// 10종목 x 3API = 30콜, 요청 사이 0.35초 대기 (KIS 제한 보호)
-// 전체 완료까지 대략 15~20초 정도 걸려요. 느리다고 놀라지 마세요!
+// [변경됨] 모의투자/실전투자 앱키 2쌍 -> 실전 앱키 1쌍으로 통일
+// [변경됨] 토큰 캐시를 index.js/cron-close.js와 같은 Redis 키(feargreed:kistoken)로 공유
+//          -> 세 파일이 서로 "1분당1회" 제한을 침범하지 않음
 
-const KIS_APP_KEY    = process.env.KIS_APP_KEY;
-const KIS_APP_SECRET = process.env.KIS_APP_SECRET;
-const KIS_BASE        = 'https://openapivts.koreainvestment.com:29443';
+const KIS_APP_KEY    = process.env.KIS_APP_KEY;    // 이제 이 값이 실전 앱키
+const KIS_APP_SECRET = process.env.KIS_APP_SECRET; // 이제 이 값이 실전 시크릿
+const KIS_BASE        = 'https://openapi.koreainvestment.com:9443'; // 실전 도메인
+
+const REDIS_URL   = process.env.KV_REST_API_URL;
+const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
 
 const SEMI_STOCKS = [
   { code: '005930', name: '삼성전자' },
@@ -34,9 +36,6 @@ function daysAgoStr(n) {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
 }
 
-const REDIS_URL   = process.env.KV_REST_API_URL;
-const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
-
 async function kvGetSimple(key) {
   if (!REDIS_URL || !REDIS_TOKEN) return null;
   try {
@@ -56,15 +55,15 @@ async function kvSetSimple(key, value) {
       headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(JSON.stringify(value))
     });
-  } catch (e) { /* 저장 실패해도 무시하고 진행 */ }
+  } catch (e) { /* 저장 실패해도 무시 */ }
 }
 
+// [변경됨] index.js / cron-close.js와 동일한 Redis 키 사용 -> 토큰 공유
 async function getKISToken() {
-  const cached = await kvGetSimple('semi:paptoken');
+  const cached = await kvGetSimple('feargreed:kistoken');
   if (cached && cached.token && cached.expiresAt && Date.now() < cached.expiresAt) {
     return cached.token;
   }
-
   const res = await fetch(`${KIS_BASE}/oauth2/tokenP`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -75,9 +74,8 @@ async function getKISToken() {
     throw new Error(`토큰 발급 실패: ${res.status} ${t}`);
   }
   const data = await res.json();
-  const expiresInSec = data.expires_in || 86400;
-  const expiresAt = Date.now() + (expiresInSec - 600) * 1000;
-  await kvSetSimple('semi:paptoken', { token: data.access_token, expiresAt });
+  const expiresAt = Date.now() + (data.expires_in - 600) * 1000;
+  await kvSetSimple('feargreed:kistoken', { token: data.access_token, expiresAt });
   return data.access_token;
 }
 
@@ -101,7 +99,7 @@ async function fetchPrice(token, code) {
 
 // API ② 최근 20거래일 일별 종가 (변동성용)
 async function fetchDailyChart(token, code) {
-  const d1 = daysAgoStr(30); // 주말/휴장 감안해 30일치 요청 -> 실제 거래일 20개 이상 확보
+  const d1 = daysAgoStr(30);
   const d2 = todayStr();
   const res = await fetch(
     `${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${code}&FID_INPUT_DATE_1=${d1}&FID_INPUT_DATE_2=${d2}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=1`,
@@ -112,70 +110,31 @@ async function fetchDailyChart(token, code) {
   if (!res.ok || !Array.isArray(rows) || rows.length < 5) {
     return { error: `dailyChart HTTP ${res.status} or 데이터 부족`, raw: rows ? rows.length : data };
   }
-  // 최신순으로 오는 경우가 많음 -> 종가만 뽑아서 오래된 순으로 정렬
-  const closes = rows
-    .map(r => parseFloat(r.stck_clpr))
-    .filter(v => v > 0)
-    .reverse();
+  const closes = rows.map(r => parseFloat(r.stck_clpr)).filter(v => v > 0).reverse();
   const last20 = closes.slice(-20);
   if (last20.length < 5) return { error: '유효 종가 데이터 5개 미만' };
 
-  // 일별 수익률
   const returns = [];
-  for (let i = 1; i < last20.length; i++) {
-    returns.push((last20[i] - last20[i - 1]) / last20[i - 1]);
-  }
+  for (let i = 1; i < last20.length; i++) returns.push((last20[i] - last20[i - 1]) / last20[i - 1]);
   const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
   const variance = returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
-  const dailyVol = Math.sqrt(variance);
-  const annualizedVolPct = dailyVol * Math.sqrt(252) * 100; // 연환산 변동성(%)
+  const annualizedVolPct = Math.sqrt(variance) * Math.sqrt(252) * 100;
 
   return { annualizedVolPct: parseFloat(annualizedVolPct.toFixed(2)), sampleDays: last20.length };
 }
 
-// API ③ 종목별 외인기관 추정가집계 (자금흐름용)
-// 주의: 이 API는 모의투자 미지원 -> 실전 도메인 + 실전 앱키/시크릿 필요
-const KIS_REAL_BASE   = 'https://openapi.koreainvestment.com:9443';
-const KIS_REAL_APPKEY = process.env.KIS_REAL_APP_KEY || KIS_APP_KEY;
-const KIS_REAL_SECRET = process.env.KIS_REAL_APP_SECRET || KIS_APP_SECRET;
-
-async function getKISRealToken() {
-  // 1) Redis에 저장된 유효한 토큰이 있으면 그걸 재사용 (KIS 토큰 유효기간 1일)
-  const cached = await kvGetSimple('semi:realtoken');
-  if (cached && cached.token && cached.expiresAt && Date.now() < cached.expiresAt) {
-    return cached.token;
-  }
-
-  // 2) 없거나 만료됐으면 새로 발급
-  const res = await fetch(`${KIS_REAL_BASE}/oauth2/tokenP`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ grant_type: 'client_credentials', appkey: KIS_REAL_APPKEY, appsecret: KIS_REAL_SECRET })
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => '');
-    throw new Error(`실전 토큰 발급 실패: ${res.status} ${t}`);
-  }
-  const data = await res.json();
-  const token = data.access_token;
-  const expiresInSec = data.expires_in || 86400;
-  // 만료 10분 전까지만 유효한 걸로 간주 (여유 버퍼)
-  const expiresAt = Date.now() + (expiresInSec - 600) * 1000;
-  await kvSetSimple('semi:realtoken', { token, expiresAt });
-  return token;
-}
-
-async function fetchInvestorTrend(realToken, code) {
+// API ③ 종목별 외인기관 추정가집계 (자금흐름용) - 실전 전용 API, 이제 같은 키/토큰 그대로 사용
+async function fetchInvestorTrend(token, code) {
   const res = await fetch(
-    `${KIS_REAL_BASE}/uapi/domestic-stock/v1/quotations/investor-trend-estimate?MKSC_SHRN_ISCD=${code}`,
+    `${KIS_BASE}/uapi/domestic-stock/v1/quotations/investor-trend-estimate?MKSC_SHRN_ISCD=${code}`,
     {
       headers: {
         'Content-Type': 'application/json',
-        authorization: `Bearer ${realToken}`,
-        appkey: KIS_REAL_APPKEY,
-        appsecret: KIS_REAL_SECRET,
+        authorization: `Bearer ${token}`,
+        appkey: KIS_APP_KEY,
+        appsecret: KIS_APP_SECRET,
         tr_id: 'HHPTJ04160200',
-        custtype: 'P'   // 필수 헤더! 개인:P, 법인:B
+        custtype: 'P'
       }
     }
   );
@@ -184,10 +143,9 @@ async function fetchInvestorTrend(realToken, code) {
   if (!res.ok || !Array.isArray(arr) || arr.length === 0) {
     return { error: `investorTrend HTTP ${res.status}`, raw: data };
   }
-  // arr[0]이 가장 최근 입력시점 (14:30 -> 13:20 -> ... 순으로 최신이 먼저)
   const latest = arr[0];
   return {
-    입력시점: latest.bsop_hour_gb, // 1:9시30 2:10시 3:11시20 4:13시20 5:14시30
+    입력시점: latest.bsop_hour_gb,
     외국인수량: parseInt(latest.frgn_fake_ntby_qty, 10),
     기관수량: parseInt(latest.orgn_fake_ntby_qty, 10),
     합산수량: parseInt(latest.sum_fake_ntby_qty, 10),
@@ -203,41 +161,24 @@ module.exports = async function handler(req, res) {
       return res.status(500).json({ success: false, error: 'KIS_APP_KEY 또는 KIS_APP_SECRET 환경변수 없음' });
     }
 
-    const token = await getKISToken();
-
-    // 자금흐름 API는 모의투자 미지원 -> 실전 토큰 별도 발급 (실전 앱키 없으면 에러 안내만 하고 계속 진행)
-    let realToken = null;
-    let realTokenError = null;
-    try {
-      realToken = await getKISRealToken();
-    } catch (e) {
-      realTokenError = e.message;
-    }
+    const token = await getKISToken(); // 이제 토큰 발급은 딱 1번만 (전체 함수 공유)
 
     const results = [];
-
     for (const stock of SEMI_STOCKS) {
       const row = { 종목명: stock.name, 종목코드: stock.code };
 
-      const price = await fetchPrice(token, stock.code);
-      row.price = price;
+      row.price = await fetchPrice(token, stock.code);
       await sleep(350);
 
-      const chart = await fetchDailyChart(token, stock.code);
-      row.chart = chart;
+      row.chart = await fetchDailyChart(token, stock.code);
       await sleep(350);
 
-      if (realToken) {
-        row.investor = await fetchInvestorTrend(realToken, stock.code);
-      } else {
-        row.investor = { error: '실전 토큰 없음: ' + realTokenError };
-      }
+      row.investor = await fetchInvestorTrend(token, stock.code);
       await sleep(350);
 
       results.push(row);
     }
 
-    // ── 5-Factor 계산 (시가총액 가중) ──
     const valid = results.filter(r => !r.price.error);
     const totalCap = valid.reduce((s, r) => s + r.price.marketCap, 0);
 
@@ -251,9 +192,7 @@ module.exports = async function handler(req, res) {
     const avgRangePos = rangePositions.reduce((a, b) => a + b, 0) / rangePositions.length;
 
     const validVol = valid.filter(r => r.chart && !r.chart.error);
-    const avgVol = validVol.length
-      ? validVol.reduce((s, r) => s + r.chart.annualizedVolPct, 0) / validVol.length
-      : null;
+    const avgVol = validVol.length ? validVol.reduce((s, r) => s + r.chart.annualizedVolPct, 0) / validVol.length : null;
 
     const validFlow = valid.filter(r => r.investor && !r.investor.error);
     const netForeignOrg = validFlow.length
@@ -263,9 +202,7 @@ module.exports = async function handler(req, res) {
     const momentumScore = normalize(weightedChange, -4, 4);
     const breadthScore = breadthPct;
     const strengthScore = avgRangePos;
-    // 변동성: 낮을수록 탐욕(고득점), 높을수록 공포(저득점). 20~60% 대를 기준 레인지로 잡음(임시)
     const volatilityScore = avgVol !== null ? Math.max(0, Math.min(100, 100 - normalize(avgVol, 20, 60))) : null;
-    // 자금흐름: 수량 기준이라 절대치 스케일이 종목마다 달라 임시로 부호만 반영 (양수=탐욕 방향)
     const flowScore = netForeignOrg !== null ? (netForeignOrg > 0 ? 65 : netForeignOrg < 0 ? 35 : 50) : null;
 
     const scores = [momentumScore, breadthScore, strengthScore, volatilityScore, flowScore].filter(v => v !== null);
@@ -274,7 +211,7 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({
       success: true,
       timestamp: new Date().toISOString(),
-      note: '이 화면 전체를 복사해서 Claude에게 붙여넣어 주세요. investor._rawFields를 보고 필드명이 맞는지도 같이 확인해드릴게요.',
+      note: '이 화면 전체를 복사해서 Claude에게 붙여넣어 주세요.',
       summary: {
         시총가중등락률: weightedChange.toFixed(2) + '%',
         상승비율: breadthPct.toFixed(1) + '%',
