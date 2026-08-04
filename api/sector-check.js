@@ -274,18 +274,23 @@ module.exports = async function handler(req, res) {
     const validVol = valid.filter(r => r.chart && !r.chart.error && r.chart.volRatio !== null);
     const avgVolRatio = validVol.length ? validVol.reduce((s, r) => s + r.chart.volRatio, 0) / validVol.length : null;
 
+    // [변경됨] 수량 단순 합산 -> 종목별 (수량 x 가격)으로 "금액" 환산 후 합산
+    //          -> 대형주/소형주 간 가격 차이로 왜곡되던 문제 해결
     const validFlow = valid.filter(r => r.investor && !r.investor.error);
-    const netForeignOrg = validFlow.length
-      ? validFlow.reduce((s, r) => s + r.investor.외국인수량 + r.investor.기관수량, 0)
+    const netForeignOrgValue = validFlow.length
+      ? validFlow.reduce((s, r) => s + (r.investor.외국인수량 + r.investor.기관수량) * r.price.price, 0)
       : null;
+    // 바스켓 전체 시가총액(억원) 대비 순매수 금액 비율(%)로 정규화 -> 섹터 규모와 무관하게 공정 비교
+    const totalCapWon = totalCap * 1e8; // 억원 -> 원
+    const flowPct = (netForeignOrgValue !== null && totalCapWon > 0) ? (netForeignOrgValue / totalCapWon) * 100 : null;
 
-    const momentumScore = normalize(weightedChange, -4, 4);
+    const momentumScore = normalize(weightedChange, -8, 8); // [변경됨] -4~4 -> -8~8 (급등락일에도 변별력 유지)
     const breadthScore = breadthPct;
     const strengthScore = avgRangePos;
     const volatilityScore = avgVolRatio !== null
       ? Math.max(0, Math.min(100, 100 - normalize(avgVolRatio, 0.5, 2.0)))
       : null;
-    const flowScore = netForeignOrg !== null ? (netForeignOrg > 0 ? 65 : netForeignOrg < 0 ? 35 : 50) : null;
+    const flowScore = flowPct !== null ? normalize(flowPct, -0.3, 0.3) : null; // ±0.3%가 이 추정치 API 특성상 상당히 큰 편이라 이 정도로 스케일링
 
     const scores = [momentumScore, breadthScore, strengthScore, volatilityScore, flowScore].filter(v => v !== null);
     const finalScore = scores.reduce((a, b) => a + b, 0) / scores.length;
@@ -309,7 +314,8 @@ module.exports = async function handler(req, res) {
         상승비율: breadthPct.toFixed(1) + '%',
         평균52주위치: avgRangePos.toFixed(1) + '%',
         평균변동성비율: avgVolRatio !== null ? avgVolRatio.toFixed(2) + ' (1.0=평소수준)' : '계산불가',
-        외국인기관순매수합: netForeignOrg,
+        외국인기관순매수금액_억원: netForeignOrgValue !== null ? Math.round(netForeignOrgValue / 1e8) : null,
+        시총대비순매수비율: flowPct !== null ? flowPct.toFixed(3) + '%' : '계산불가',
         '5-Factor점수': {
           모멘텀: momentumScore.toFixed(1),
           시장폭: breadthScore.toFixed(1),
