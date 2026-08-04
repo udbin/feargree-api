@@ -284,7 +284,7 @@ module.exports = async function handler(req, res) {
     const totalCapWon = totalCap * 1e8; // 억원 -> 원
     const flowPct = (netForeignOrgValue !== null && totalCapWon > 0) ? (netForeignOrgValue / totalCapWon) * 100 : null;
 
-    const momentumScore = normalize(weightedChange, -8, 8); // [변경됨] -4~4 -> -8~8 (급등락일에도 변별력 유지)
+    const momentumScore = normalize(weightedChange, -10, 10); // [변경됨] -8~8 -> -10~10 (오늘 같은 极단적 상승장에서도 상한선 방지)
     const breadthScore = breadthPct;
     const strengthScore = avgRangePos;
     const volatilityScore = avgVolRatio !== null
