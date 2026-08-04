@@ -3,7 +3,7 @@
 
 const KIS_APP_KEY    = process.env.KIS_APP_KEY;
 const KIS_APP_SECRET = process.env.KIS_APP_SECRET;
-const KIS_BASE       = 'https://openapivts.koreainvestment.com:29443';
+const KIS_BASE       = 'https://openapi.koreainvestment.com:9443'; // [변경됨] 실전 도메인으로 통일
 
 const REDIS_URL   = process.env.KV_REST_API_URL;
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
@@ -19,7 +19,24 @@ async function kvSetSimple(key, value) {
   console.log(`kvSetSimple[${key}] result:`, JSON.stringify(json));
 }
 
+async function kvGetSimple2(key) {
+  if (!REDIS_URL || !REDIS_TOKEN) return null;
+  try {
+    const res = await fetch(`${REDIS_URL}/get/${key}`, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (json.result === null || json.result === undefined) return null;
+    return typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
+  } catch (e) { return null; }
+}
+
 async function getKISToken() {
+  // index.js와 같은 Redis 키(feargreed:kistoken)를 공유해서 1분당1회 제한 충돌 방지
+  const cached = await kvGetSimple2('feargreed:kistoken');
+  if (cached && cached.token && cached.expiresAt && Date.now() < cached.expiresAt) {
+    return cached.token;
+  }
+
   const res = await fetch(`${KIS_BASE}/oauth2/tokenP`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -27,6 +44,8 @@ async function getKISToken() {
   });
   if (!res.ok) throw new Error(`KIS token fail: ${res.status}`);
   const data = await res.json();
+  const expiresAt = Date.now() + (data.expires_in - 600) * 1000;
+  await kvSetSimple('feargreed:kistoken', { token: data.access_token, expiresAt });
   return data.access_token;
 }
 
