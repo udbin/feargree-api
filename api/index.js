@@ -9,6 +9,18 @@ const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
 let kisToken = null;
 let kisTokenExpiry = 0;
 
+// [신규] 모든 외부(네이버/CNN/야후 등) fetch에 타임아웃을 강제한다.
+// 외부 사이트가 응답 없이 멈추면 함수가 몇 분씩 대기하며 Active CPU를 낭비하던 문제를 방지.
+async function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(id);
+  }
+}
+
 // ── Upstash Redis REST ──
 async function kvGet(key) {
   if (!REDIS_URL || !REDIS_TOKEN) { console.warn('Redis env missing'); return null; }
@@ -217,7 +229,7 @@ async function fetchUSFearGreed() {
   };
   for (const url of endpoints) {
     try {
-      const res = await fetch(url, { headers: hdrs });
+      const res = await fetchWithTimeout(url, { headers: hdrs }, 6000);
       if (!res.ok) continue;
       const data = await res.json();
       const fg = data.fear_and_greed;
@@ -285,10 +297,10 @@ async function getKISToken() {
   } catch (e) { console.warn('kistoken 캐시 조회 실패:', e.message); }
 
   // 3) 캐시 없으면 새로 발급
-  const res = await fetch(`${KIS_BASE}/oauth2/tokenP`,{
+  const res = await fetchWithTimeout(`${KIS_BASE}/oauth2/tokenP`,{
     method:'POST', headers:{'Content-Type':'application/json'},
     body:JSON.stringify({grant_type:'client_credentials',appkey:KIS_APP_KEY,appsecret:KIS_APP_SECRET})
-  });
+  }, 6000);
   if (!res.ok) throw new Error(`KIS token fail: ${res.status}`);
   const data = await res.json();
   kisToken = data.access_token;
@@ -302,9 +314,10 @@ async function getKISToken() {
 // [신규 함수 1] KOSPI 20거래일 수익률 (Yahoo Finance 일별 종가)
 // ============================================================
 async function fetchKOSPI20DayReturn() {
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     'https://query1.finance.yahoo.com/v8/finance/chart/%5EKS11?interval=1d&range=2mo',
-    { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } }
+    { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } },
+    6000
   );
   if (!res.ok) throw new Error(`Yahoo KOSPI history: ${res.status}`);
   const data = await res.json();
@@ -320,9 +333,10 @@ async function fetchKOSPI20DayReturn() {
 // [신규 함수 2] 국고채 3년물 금리 (네이버 금융 금리 페이지, VKOSPI와 동일한 스크래핑 방식)
 // ============================================================
 async function fetchGovBond3YYield() {
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     'https://finance.naver.com/marketindex/interestDailyQuote.naver?marketindexCd=IRR_GOVT03Y',
-    { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html', 'Accept-Language': 'ko-KR,ko;q=0.9' } }
+    { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html', 'Accept-Language': 'ko-KR,ko;q=0.9' } },
+    6000
   );
   if (!res.ok) throw new Error(`Naver bond yield: ${res.status}`);
   const html = await res.text();
@@ -414,9 +428,9 @@ async function fetchKRFearGreed() {
 
 async function fetchVKOSPI() {
   try {
-    const res = await fetch('https://finance.naver.com/sise/sise_index.naver?code=VKOSPI',{
+    const res = await fetchWithTimeout('https://finance.naver.com/sise/sise_index.naver?code=VKOSPI',{
       headers:{'User-Agent':'Mozilla/5.0','Accept':'text/html','Accept-Language':'ko-KR,ko;q=0.9'}
-    });
+    }, 6000);
     if (res.ok) {
       const html = await res.text();
       const m = html.match(/id="VKOSPI_current_value"[^>]*>([\d.]+)/)||html.match(/class="num_total"[^>]*>\s*([\d.]+)/)||html.match(/"now":\s*"([\d.]+)"/);
@@ -447,9 +461,10 @@ function isMarketOpen() {
 }
 
 async function fetchKISIndex(token, code) {
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-index-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${code}`,
-    { headers:{'Content-Type':'application/json','authorization':`Bearer ${token}`,'appkey':KIS_APP_KEY,'appsecret':KIS_APP_SECRET,'tr_id':'FHPUP02100000'} }
+    { headers:{'Content-Type':'application/json','authorization':`Bearer ${token}`,'appkey':KIS_APP_KEY,'appsecret':KIS_APP_SECRET,'tr_id':'FHPUP02100000'} },
+    6000
   );
   if (!res.ok) throw new Error(`KIS index ${code}: ${res.status}`);
   const data = await res.json();
@@ -494,9 +509,10 @@ async function fetchKISIndex(token, code) {
 }
 
 async function fetchYahoo(symbol) {
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2d`,
-    { headers:{'User-Agent':'Mozilla/5.0','Accept':'application/json'} }
+    { headers:{'User-Agent':'Mozilla/5.0','Accept':'application/json'} },
+    6000
   );
   if (!res.ok) throw new Error(`Yahoo ${symbol}: ${res.status}`);
   const data = await res.json();
