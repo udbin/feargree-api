@@ -51,7 +51,7 @@ async function getKISToken() {
 async function fetchPrice(token, code) {
   const res = await fetch(
     `${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${code}`,
-    { headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}`, appkey: KIS_APP_KEY, appsecret: KIS_APP_SECRET, tr_id: 'FHKST01010100' } }
+    { headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}`, appkey: KIS_APP_KEY, appsecret: KIS_APP_SECRET, tr_id: 'FHKST01010100', custtype: 'P' } }
   );
   const data = await res.json();
   const o = data.output;
@@ -71,7 +71,7 @@ async function fetchDailyChart(token, code) {
   const d2 = todayStr();
   const res = await fetch(
     `${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${code}&FID_INPUT_DATE_1=${d1}&FID_INPUT_DATE_2=${d2}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=1`,
-    { headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}`, appkey: KIS_APP_KEY, appsecret: KIS_APP_SECRET, tr_id: 'FHKST03010100' } }
+    { headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}`, appkey: KIS_APP_KEY, appsecret: KIS_APP_SECRET, tr_id: 'FHKST03010100', custtype: 'P' } }
   );
   const data = await res.json();
   const rows = data.output2;
@@ -100,20 +100,50 @@ async function fetchDailyChart(token, code) {
 }
 
 // API ③ 종목별 외인기관 추정가집계 (자금흐름용)
-async function fetchInvestorTrend(token, code) {
+// 주의: 이 API는 모의투자 미지원 -> 실전 도메인 + 실전 앱키/시크릿 필요
+const KIS_REAL_BASE   = 'https://openapi.koreainvestment.com:9443';
+const KIS_REAL_APPKEY = process.env.KIS_REAL_APP_KEY || KIS_APP_KEY;
+const KIS_REAL_SECRET = process.env.KIS_REAL_APP_SECRET || KIS_APP_SECRET;
+
+async function getKISRealToken() {
+  const res = await fetch(`${KIS_REAL_BASE}/oauth2/tokenP`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'client_credentials', appkey: KIS_REAL_APPKEY, appsecret: KIS_REAL_SECRET })
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`실전 토큰 발급 실패: ${res.status} ${t}`);
+  }
+  return (await res.json()).access_token;
+}
+
+async function fetchInvestorTrend(realToken, code) {
   const res = await fetch(
-    `${KIS_BASE}/uapi/domestic-stock/v1/quotations/investor-trend-estimate?MKSC_SHRN_ISCD=${code}`,
-    { headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}`, appkey: KIS_APP_KEY, appsecret: KIS_APP_SECRET, tr_id: 'HHPTJ04160200' } }
+    `${KIS_REAL_BASE}/uapi/domestic-stock/v1/quotations/investor-trend-estimate?MKSC_SHRN_ISCD=${code}`,
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        authorization: `Bearer ${realToken}`,
+        appkey: KIS_REAL_APPKEY,
+        appsecret: KIS_REAL_SECRET,
+        tr_id: 'HHPTJ04160200',
+        custtype: 'P'   // 필수 헤더! 개인:P, 법인:B
+      }
+    }
   );
   const data = await res.json();
-  // 이 API는 output2가 배열(최근 여러 시점)일 수 있어서 첫 번째(최신) 항목만 사용
   const arr = data.output2;
-  const o = Array.isArray(arr) ? arr[0] : data.output;
-  if (!res.ok || !o) return { error: `investorTrend HTTP ${res.status}`, raw: data };
+  if (!res.ok || !Array.isArray(arr) || arr.length === 0) {
+    return { error: `investorTrend HTTP ${res.status}`, raw: data };
+  }
+  // arr[0]이 가장 최근 입력시점 (14:30 -> 13:20 -> ... 순으로 최신이 먼저)
+  const latest = arr[0];
   return {
-    foreignNetQty: parseFloat(o.frgn_ntby_qty || 0),
-    orgNetQty: parseFloat(o.orgn_ntby_qty || 0),
-    _rawFields: Object.keys(o), // 실제 필드명 확인용 - 값이 이상하면 이 목록을 보고 필드명 조정
+    입력시점: latest.bsop_hour_gb, // 1:9시30 2:10시 3:11시20 4:13시20 5:14시30
+    외국인수량: parseInt(latest.frgn_fake_ntby_qty, 10),
+    기관수량: parseInt(latest.orgn_fake_ntby_qty, 10),
+    합산수량: parseInt(latest.sum_fake_ntby_qty, 10),
   };
 }
 
@@ -127,6 +157,16 @@ module.exports = async function handler(req, res) {
     }
 
     const token = await getKISToken();
+
+    // 자금흐름 API는 모의투자 미지원 -> 실전 토큰 별도 발급 (실전 앱키 없으면 에러 안내만 하고 계속 진행)
+    let realToken = null;
+    let realTokenError = null;
+    try {
+      realToken = await getKISRealToken();
+    } catch (e) {
+      realTokenError = e.message;
+    }
+
     const results = [];
 
     for (const stock of SEMI_STOCKS) {
@@ -140,8 +180,11 @@ module.exports = async function handler(req, res) {
       row.chart = chart;
       await sleep(350);
 
-      const investor = await fetchInvestorTrend(token, stock.code);
-      row.investor = investor;
+      if (realToken) {
+        row.investor = await fetchInvestorTrend(realToken, stock.code);
+      } else {
+        row.investor = { error: '실전 토큰 없음: ' + realTokenError };
+      }
       await sleep(350);
 
       results.push(row);
@@ -167,7 +210,7 @@ module.exports = async function handler(req, res) {
 
     const validFlow = valid.filter(r => r.investor && !r.investor.error);
     const netForeignOrg = validFlow.length
-      ? validFlow.reduce((s, r) => s + r.investor.foreignNetQty + r.investor.orgNetQty, 0)
+      ? validFlow.reduce((s, r) => s + r.investor.외국인수량 + r.investor.기관수량, 0)
       : null;
 
     const momentumScore = normalize(weightedChange, -4, 4);
