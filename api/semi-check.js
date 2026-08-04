@@ -97,9 +97,11 @@ async function fetchPrice(token, code) {
   };
 }
 
-// API ② 최근 20거래일 일별 종가 (변동성용)
+// API ② 최근 60거래일 일별 종가 (변동성용)
+// [변경됨] 20일 절대 변동성 대신, "최근 10일 변동성 vs 이전 50일 평균 변동성" 상대 비교로 전환
+//          -> 반도체처럼 원래 변동성이 큰 섹터도 고정 기준(20~60%)에 왜곡되지 않음
 async function fetchDailyChart(token, code) {
-  const d1 = daysAgoStr(30);
+  const d1 = daysAgoStr(90); // 60 거래일 확보 위해 넉넉히 90일 요청 (KIS 1회 최대 100건)
   const d2 = todayStr();
   const res = await fetch(
     `${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${code}&FID_INPUT_DATE_1=${d1}&FID_INPUT_DATE_2=${d2}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=1`,
@@ -107,20 +109,36 @@ async function fetchDailyChart(token, code) {
   );
   const data = await res.json();
   const rows = data.output2;
-  if (!res.ok || !Array.isArray(rows) || rows.length < 5) {
+  if (!res.ok || !Array.isArray(rows) || rows.length < 15) {
     return { error: `dailyChart HTTP ${res.status} or 데이터 부족`, raw: rows ? rows.length : data };
   }
   const closes = rows.map(r => parseFloat(r.stck_clpr)).filter(v => v > 0).reverse();
-  const last20 = closes.slice(-20);
-  if (last20.length < 5) return { error: '유효 종가 데이터 5개 미만' };
+  const last60 = closes.slice(-60);
+  if (last60.length < 15) return { error: '유효 종가 데이터 15개 미만' };
 
   const returns = [];
-  for (let i = 1; i < last20.length; i++) returns.push((last20[i] - last20[i - 1]) / last20[i - 1]);
-  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const variance = returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
-  const annualizedVolPct = Math.sqrt(variance) * Math.sqrt(252) * 100;
+  for (let i = 1; i < last60.length; i++) returns.push((last60[i] - last60[i - 1]) / last60[i - 1]);
 
-  return { annualizedVolPct: parseFloat(annualizedVolPct.toFixed(2)), sampleDays: last20.length };
+  function annualizedVol(arr) {
+    if (arr.length < 2) return null;
+    const m = arr.reduce((a, b) => a + b, 0) / arr.length;
+    const v = arr.reduce((a, b) => a + Math.pow(b - m, 2), 0) / arr.length;
+    return Math.sqrt(v) * Math.sqrt(252) * 100;
+  }
+
+  const recentReturns = returns.slice(-10);      // 최근 10거래일
+  const baselineReturns = returns.slice(0, -10);  // 그 이전 구간 (기준선)
+
+  const recentVol = annualizedVol(recentReturns);
+  const baselineVol = annualizedVol(baselineReturns.length >= 10 ? baselineReturns : returns);
+  const volRatio = (recentVol !== null && baselineVol) ? recentVol / baselineVol : null; // 1.0 = 평소와 동일
+
+  return {
+    recentVolPct: recentVol !== null ? parseFloat(recentVol.toFixed(1)) : null,
+    baselineVolPct: baselineVol !== null ? parseFloat(baselineVol.toFixed(1)) : null,
+    volRatio: volRatio !== null ? parseFloat(volRatio.toFixed(2)) : null,
+    sampleDays: last60.length
+  };
 }
 
 // API ③ 종목별 외인기관 추정가집계 (자금흐름용) - 실전 전용 API, 이제 같은 키/토큰 그대로 사용
@@ -203,8 +221,8 @@ module.exports = async function handler(req, res) {
     });
     const avgRangePos = rangePositions.reduce((a, b) => a + b, 0) / rangePositions.length;
 
-    const validVol = valid.filter(r => r.chart && !r.chart.error);
-    const avgVol = validVol.length ? validVol.reduce((s, r) => s + r.chart.annualizedVolPct, 0) / validVol.length : null;
+    const validVol = valid.filter(r => r.chart && !r.chart.error && r.chart.volRatio !== null);
+    const avgVolRatio = validVol.length ? validVol.reduce((s, r) => s + r.chart.volRatio, 0) / validVol.length : null;
 
     const validFlow = valid.filter(r => r.investor && !r.investor.error);
     const netForeignOrg = validFlow.length
@@ -214,7 +232,11 @@ module.exports = async function handler(req, res) {
     const momentumScore = normalize(weightedChange, -4, 4);
     const breadthScore = breadthPct;
     const strengthScore = avgRangePos;
-    const volatilityScore = avgVol !== null ? Math.max(0, Math.min(100, 100 - normalize(avgVol, 20, 60))) : null;
+    // [변경됨] 절대 변동성(20~60% 고정 기준) 대신, 최근10일/이전50일 비율(volRatio)로 계산
+    // ratio 1.0 = 평소와 동일(중립) / 2.0 이상 = 평소보다 2배 튐(공포) / 0.5 이하 = 평소보다 훨씬 잠잠(탐욕)
+    const volatilityScore = avgVolRatio !== null
+      ? Math.max(0, Math.min(100, 100 - normalize(avgVolRatio, 0.5, 2.0)))
+      : null;
     const flowScore = netForeignOrg !== null ? (netForeignOrg > 0 ? 65 : netForeignOrg < 0 ? 35 : 50) : null;
 
     const scores = [momentumScore, breadthScore, strengthScore, volatilityScore, flowScore].filter(v => v !== null);
@@ -228,7 +250,7 @@ module.exports = async function handler(req, res) {
         시총가중등락률: weightedChange.toFixed(2) + '%',
         상승비율: breadthPct.toFixed(1) + '%',
         평균52주위치: avgRangePos.toFixed(1) + '%',
-        평균연환산변동성: avgVol !== null ? avgVol.toFixed(1) + '%' : '계산불가',
+        평균변동성비율: avgVolRatio !== null ? avgVolRatio.toFixed(2) + ' (1.0=평소수준)' : '계산불가',
         외국인기관순매수합: netForeignOrg,
         '5-Factor점수': {
           모멘텀: momentumScore.toFixed(1),
