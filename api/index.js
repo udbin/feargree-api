@@ -1,7 +1,7 @@
 // api/index.js - Vercel Serverless Function
 const KIS_APP_KEY    = process.env.KIS_APP_KEY;
 const KIS_APP_SECRET = process.env.KIS_APP_SECRET;
-const KIS_BASE       = 'https://openapivts.koreainvestment.com:29443';
+const KIS_BASE       = 'https://openapi.koreainvestment.com:9443'; // [변경됨] 실전 도메인으로 통일 (기존 모의투자 도메인에서 전환)
 
 const REDIS_URL   = process.env.KV_REST_API_URL;
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
@@ -271,7 +271,20 @@ async function fetchUSFallback() {
 
 async function getKISToken() {
   const now = Date.now();
+  // 1) 메모리 캐시 (같은 인스턴스 재사용 시 제일 빠름)
   if (kisToken && now < kisTokenExpiry) return kisToken;
+
+  // 2) Redis 공유 캐시 (index.js / cron-close.js / semi-check.js가 전부 공유 -> 1분당1회 제한 충돌 방지)
+  try {
+    const cached = await kvGet('feargreed:kistoken');
+    if (cached && cached.token && cached.expiresAt && now < cached.expiresAt) {
+      kisToken = cached.token;
+      kisTokenExpiry = cached.expiresAt;
+      return kisToken;
+    }
+  } catch (e) { console.warn('kistoken 캐시 조회 실패:', e.message); }
+
+  // 3) 캐시 없으면 새로 발급
   const res = await fetch(`${KIS_BASE}/oauth2/tokenP`,{
     method:'POST', headers:{'Content-Type':'application/json'},
     body:JSON.stringify({grant_type:'client_credentials',appkey:KIS_APP_KEY,appsecret:KIS_APP_SECRET})
@@ -279,7 +292,9 @@ async function getKISToken() {
   if (!res.ok) throw new Error(`KIS token fail: ${res.status}`);
   const data = await res.json();
   kisToken = data.access_token;
-  kisTokenExpiry = now + (data.expires_in-60)*1000;
+  kisTokenExpiry = now + (data.expires_in-600)*1000; // 만료 10분 전까지만 유효로 간주
+  try { await kvSet('feargreed:kistoken', { token: kisToken, expiresAt: kisTokenExpiry }); }
+  catch (e) { console.warn('kistoken 캐시 저장 실패:', e.message); }
   return kisToken;
 }
 
