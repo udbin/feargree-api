@@ -12,8 +12,18 @@ async function kvGetSimple(key) {
     const res = await fetch(`${REDIS_URL}/get/${key}`, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
     if (!res.ok) return null;
     const json = await res.json();
-    if (json.result === null || json.result === undefined) return null;
-    return typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
+    let result = json.result;
+    if (result === null || result === undefined) return null;
+    // [수정됨] 이중으로 감싸져 저장된 값도 최대 5단계까지 풀어서 실제 값을 꺼낸다 (index.js kvGet과 동일 로직)
+    for (let i = 0; i < 5; i++) {
+      let changed = false;
+      if (Array.isArray(result) && result.length === 1) { result = result[0]; changed = true; }
+      if (typeof result === 'string') {
+        try { result = JSON.parse(result); changed = true; } catch (e) { /* 더 이상 JSON 아님 */ }
+      }
+      if (!changed) break;
+    }
+    return result;
   } catch (e) { return null; }
 }
 
