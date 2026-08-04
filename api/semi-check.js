@@ -168,13 +168,25 @@ module.exports = async function handler(req, res) {
       const row = { 종목명: stock.name, 종목코드: stock.code };
 
       row.price = await fetchPrice(token, stock.code);
-      await sleep(350);
+      if (row.price && row.price.raw && row.price.raw.msg_cd === 'EGW00201') {
+        await sleep(1200);
+        row.price = await fetchPrice(token, stock.code);
+      }
+      await sleep(700);
 
       row.chart = await fetchDailyChart(token, stock.code);
-      await sleep(350);
+      if (row.chart && row.chart.raw && row.chart.raw.msg_cd === 'EGW00201') {
+        await sleep(1200);
+        row.chart = await fetchDailyChart(token, stock.code);
+      }
+      await sleep(700);
 
       row.investor = await fetchInvestorTrend(token, stock.code);
-      await sleep(350);
+      if (row.investor && row.investor.raw && row.investor.raw.msg_cd === 'EGW00201') {
+        await sleep(1200);
+        row.investor = await fetchInvestorTrend(token, stock.code);
+      }
+      await sleep(700);
 
       results.push(row);
     }
