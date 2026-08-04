@@ -295,12 +295,33 @@ module.exports = async function handler(req, res) {
     const scores = [momentumScore, breadthScore, strengthScore, volatilityScore, flowScore].filter(v => v !== null);
     const finalScore = scores.reduce((a, b) => a + b, 0) / scores.length;
 
-    // 섹터별 결과도 Redis에 저장해두면, 나중에 사이트 페이지에서 매번 API 재조회 없이 바로 불러다 쓸 수 있어요
+    // 섹터별 결과 저장 -> sectors-summary(카드용)와 상세페이지(클릭용) 둘 다 이걸 씀
     await kvSetSimple(`feargreed:sector:${sectorKey}`, {
       date: todayStr(),
       score: Math.round(finalScore),
       label: sector.label,
       updatedAt: new Date().toISOString(),
+      factors: {
+        모멘텀: Number(momentumScore.toFixed(1)),
+        시장폭: Number(breadthScore.toFixed(1)),
+        시장강도: Number(strengthScore.toFixed(1)),
+        변동성: volatilityScore !== null ? Number(volatilityScore.toFixed(1)) : null,
+        자금흐름: flowScore !== null ? Number(flowScore.toFixed(1)) : null,
+      },
+      weightedChangePct: Number(weightedChange.toFixed(2)),
+      breadthPct: Number(breadthPct.toFixed(1)),
+      flowPct: flowPct !== null ? Number(flowPct.toFixed(3)) : null,
+      stocks: results.map(r => ({
+        name: r.종목명,
+        code: r.종목코드,
+        price: r.price && !r.price.error ? r.price.price : null,
+        changePct: r.price && !r.price.error ? r.price.changePct : null,
+        w52High: r.price && !r.price.error ? r.price.w52High : null,
+        w52Low: r.price && !r.price.error ? r.price.w52Low : null,
+        volRatio: r.chart && !r.chart.error ? r.chart.volRatio : null,
+        foreignQty: r.investor && !r.investor.error ? r.investor.외국인수량 : null,
+        orgQty: r.investor && !r.investor.error ? r.investor.기관수량 : null,
+      })),
     });
 
     return res.status(200).json({
