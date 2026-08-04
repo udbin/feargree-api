@@ -34,6 +34,31 @@ function daysAgoStr(n) {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
 }
 
+const REDIS_URL   = process.env.KV_REST_API_URL;
+const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
+
+async function kvGetSimple(key) {
+  if (!REDIS_URL || !REDIS_TOKEN) return null;
+  try {
+    const res = await fetch(`${REDIS_URL}/get/${key}`, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (json.result === null || json.result === undefined) return null;
+    return typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
+  } catch (e) { return null; }
+}
+
+async function kvSetSimple(key, value) {
+  if (!REDIS_URL || !REDIS_TOKEN) return;
+  try {
+    await fetch(`${REDIS_URL}/set/${key}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(JSON.stringify(value))
+    });
+  } catch (e) { /* 저장 실패해도 무시하고 진행 */ }
+}
+
 async function getKISToken() {
   const res = await fetch(`${KIS_BASE}/oauth2/tokenP`, {
     method: 'POST',
@@ -106,6 +131,13 @@ const KIS_REAL_APPKEY = process.env.KIS_REAL_APP_KEY || KIS_APP_KEY;
 const KIS_REAL_SECRET = process.env.KIS_REAL_APP_SECRET || KIS_APP_SECRET;
 
 async function getKISRealToken() {
+  // 1) Redis에 저장된 유효한 토큰이 있으면 그걸 재사용 (KIS 토큰 유효기간 1일)
+  const cached = await kvGetSimple('semi:realtoken');
+  if (cached && cached.token && cached.expiresAt && Date.now() < cached.expiresAt) {
+    return cached.token;
+  }
+
+  // 2) 없거나 만료됐으면 새로 발급
   const res = await fetch(`${KIS_REAL_BASE}/oauth2/tokenP`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -115,7 +147,13 @@ async function getKISRealToken() {
     const t = await res.text().catch(() => '');
     throw new Error(`실전 토큰 발급 실패: ${res.status} ${t}`);
   }
-  return (await res.json()).access_token;
+  const data = await res.json();
+  const token = data.access_token;
+  const expiresInSec = data.expires_in || 86400;
+  // 만료 10분 전까지만 유효한 걸로 간주 (여유 버퍼)
+  const expiresAt = Date.now() + (expiresInSec - 600) * 1000;
+  await kvSetSimple('semi:realtoken', { token, expiresAt });
+  return token;
 }
 
 async function fetchInvestorTrend(realToken, code) {
