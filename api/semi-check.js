@@ -1,84 +1,29 @@
-// api/sector-check.js - 섹터별 5-Factor 공포탐욕지수 (통합, 파라미터로 섹터 선택)
+// api/semi-check.js - 반도체 섹터 5-Factor 공포탐욕지수 (실전 도메인 단일 키 버전)
+// 사용법: https://feargree-api.vercel.app/api/semi-check
 //
-// 사용법 (섹터마다 URL 뒤에 ?sector=코드 만 바꿔서 접속):
-//   https://feargree-api.vercel.app/api/sector-check?sector=semi      (반도체)
-//   https://feargree-api.vercel.app/api/sector-check?sector=battery  (2차전지)
-//   https://feargree-api.vercel.app/api/sector-check?sector=bio      (바이오)
-//   https://feargree-api.vercel.app/api/sector-check?sector=defense  (방산)
-//
-// 한 번에 4개 다 돌리면 타임아웃 위험이 커서, 섹터 하나씩 따로 호출하는 구조예요.
-// 섹터당 10종목 x 3API = 30콜, 완료까지 25~35초 정도 걸려요.
+// [변경됨] 모의투자/실전투자 앱키 2쌍 -> 실전 앱키 1쌍으로 통일
+// [변경됨] 토큰 캐시를 index.js/cron-close.js와 같은 Redis 키(feargreed:kistoken)로 공유
+//          -> 세 파일이 서로 "1분당1회" 제한을 침범하지 않음
 
-const KIS_APP_KEY    = process.env.KIS_APP_KEY;
-const KIS_APP_SECRET = process.env.KIS_APP_SECRET;
-const KIS_BASE        = 'https://openapi.koreainvestment.com:9443';
+const KIS_APP_KEY    = process.env.KIS_APP_KEY;    // 이제 이 값이 실전 앱키
+const KIS_APP_SECRET = process.env.KIS_APP_SECRET; // 이제 이 값이 실전 시크릿
+const KIS_BASE        = 'https://openapi.koreainvestment.com:9443'; // 실전 도메인
 
 const REDIS_URL   = process.env.KV_REST_API_URL;
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
 
-// ── 섹터별 대표 종목 (시가총액 상위 10개) ──
-const SECTORS = {
-  semi: {
-    label: '반도체',
-    stocks: [
-      { code: '005930', name: '삼성전자' },
-      { code: '000660', name: 'SK하이닉스' },
-      { code: '042700', name: '한미반도체' },
-      { code: '007660', name: '이수페타시스' },
-      { code: '353200', name: '대덕전자' },
-      { code: '240810', name: '원익IPS' },
-      { code: '000990', name: 'DB하이텍' },
-      { code: '058470', name: '리노공업' },
-      { code: '039030', name: '이오테크닉스' },
-      { code: '036930', name: '주성엔지니어링' },
-    ]
-  },
-  battery: {
-    label: '2차전지',
-    stocks: [
-      { code: '373220', name: 'LG에너지솔루션' },
-      { code: '006400', name: '삼성SDI' },
-      { code: '003670', name: '포스코퓨처엠' },
-      { code: '247540', name: '에코프로비엠' },
-      { code: '086520', name: '에코프로' },
-      { code: '066970', name: '엘앤에프' },
-      { code: '005070', name: '코스모신소재' },
-      { code: '278280', name: '천보' },
-      { code: '121600', name: '나노신소재' },
-      { code: '361610', name: 'SK아이이테크놀로지' },
-    ]
-  },
-  bio: {
-    label: '바이오',
-    stocks: [
-      { code: '207940', name: '삼성바이오로직스' },
-      { code: '068270', name: '셀트리온' },
-      { code: '000100', name: '유한양행' },
-      { code: '128940', name: '한미약품' },
-      { code: '196170', name: '알테오젠' },
-      { code: '141080', name: '리가켐바이오' },
-      { code: '028300', name: 'HLB' },
-      { code: '185750', name: '종근당' },
-      { code: '302440', name: 'SK바이오사이언스' },
-      { code: '068760', name: '셀트리온제약' },
-    ]
-  },
-  defense: {
-    label: '방산',
-    stocks: [
-      { code: '012450', name: '한화에어로스페이스' },
-      { code: '079550', name: 'LIG넥스원' },
-      { code: '064350', name: '현대로템' },
-      { code: '272210', name: '한화시스템' },
-      { code: '047810', name: '한국항공우주' },
-      { code: '103140', name: '풍산' },
-      { code: '065450', name: '빅텍' },
-      { code: '005870', name: '휴니드' },
-      { code: '042660', name: '한화오션' },
-      { code: '077970', name: 'STX엔진' },
-    ]
-  },
-};
+const SEMI_STOCKS = [
+  { code: '005930', name: '삼성전자' },
+  { code: '000660', name: 'SK하이닉스' },
+  { code: '042700', name: '한미반도체' },
+  { code: '007660', name: '이수페타시스' },
+  { code: '353200', name: '대덕전자' },
+  { code: '240810', name: '원익IPS' },
+  { code: '000990', name: 'DB하이텍' },
+  { code: '058470', name: '리노공업' },
+  { code: '039030', name: '이오테크닉스' },
+  { code: '036930', name: '주성엔지니어링' },
+];
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function normalize(v, min, max) { return Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100)); }
@@ -110,10 +55,10 @@ async function kvSetSimple(key, value) {
       headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(JSON.stringify(value))
     });
-  } catch (e) { /* 무시 */ }
+  } catch (e) { /* 저장 실패해도 무시 */ }
 }
 
-// index.js / cron-close.js와 동일한 Redis 키로 토큰 공유
+// [변경됨] index.js / cron-close.js와 동일한 Redis 키 사용 -> 토큰 공유
 async function getKISToken() {
   const cached = await kvGetSimple('feargreed:kistoken');
   if (cached && cached.token && cached.expiresAt && Date.now() < cached.expiresAt) {
@@ -134,6 +79,7 @@ async function getKISToken() {
   return data.access_token;
 }
 
+// API ① 현재가 + 52주 고저
 async function fetchPrice(token, code) {
   const res = await fetch(
     `${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${code}`,
@@ -151,8 +97,11 @@ async function fetchPrice(token, code) {
   };
 }
 
+// API ② 최근 60거래일 일별 종가 (변동성용)
+// [변경됨] 20일 절대 변동성 대신, "최근 10일 변동성 vs 이전 50일 평균 변동성" 상대 비교로 전환
+//          -> 반도체처럼 원래 변동성이 큰 섹터도 고정 기준(20~60%)에 왜곡되지 않음
 async function fetchDailyChart(token, code) {
-  const d1 = daysAgoStr(90);
+  const d1 = daysAgoStr(90); // 60 거래일 확보 위해 넉넉히 90일 요청 (KIS 1회 최대 100건)
   const d2 = todayStr();
   const res = await fetch(
     `${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${code}&FID_INPUT_DATE_1=${d1}&FID_INPUT_DATE_2=${d2}&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=1`,
@@ -177,11 +126,12 @@ async function fetchDailyChart(token, code) {
     return Math.sqrt(v) * Math.sqrt(252) * 100;
   }
 
-  const recentReturns = returns.slice(-10);
-  const baselineReturns = returns.slice(0, -10);
+  const recentReturns = returns.slice(-10);      // 최근 10거래일
+  const baselineReturns = returns.slice(0, -10);  // 그 이전 구간 (기준선)
+
   const recentVol = annualizedVol(recentReturns);
   const baselineVol = annualizedVol(baselineReturns.length >= 10 ? baselineReturns : returns);
-  const volRatio = (recentVol !== null && baselineVol) ? recentVol / baselineVol : null;
+  const volRatio = (recentVol !== null && baselineVol) ? recentVol / baselineVol : null; // 1.0 = 평소와 동일
 
   return {
     recentVolPct: recentVol !== null ? parseFloat(recentVol.toFixed(1)) : null,
@@ -191,10 +141,20 @@ async function fetchDailyChart(token, code) {
   };
 }
 
+// API ③ 종목별 외인기관 추정가집계 (자금흐름용) - 실전 전용 API, 이제 같은 키/토큰 그대로 사용
 async function fetchInvestorTrend(token, code) {
   const res = await fetch(
     `${KIS_BASE}/uapi/domestic-stock/v1/quotations/investor-trend-estimate?MKSC_SHRN_ISCD=${code}`,
-    { headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}`, appkey: KIS_APP_KEY, appsecret: KIS_APP_SECRET, tr_id: 'HHPTJ04160200', custtype: 'P' } }
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        authorization: `Bearer ${token}`,
+        appkey: KIS_APP_KEY,
+        appsecret: KIS_APP_SECRET,
+        tr_id: 'HHPTJ04160200',
+        custtype: 'P'
+      }
+    }
   );
   const data = await res.json();
   const arr = data.output2;
@@ -219,20 +179,10 @@ module.exports = async function handler(req, res) {
       return res.status(500).json({ success: false, error: 'KIS_APP_KEY 또는 KIS_APP_SECRET 환경변수 없음' });
     }
 
-    const sectorKey = (req.query && req.query.sector) || 'semi';
-    const sector = SECTORS[sectorKey];
-    if (!sector) {
-      return res.status(400).json({
-        success: false,
-        error: `알 수 없는 sector 파라미터: "${sectorKey}"`,
-        사용가능한섹터: Object.keys(SECTORS)
-      });
-    }
+    const token = await getKISToken(); // 이제 토큰 발급은 딱 1번만 (전체 함수 공유)
 
-    const token = await getKISToken();
     const results = [];
-
-    for (const stock of sector.stocks) {
+    for (const stock of SEMI_STOCKS) {
       const row = { 종목명: stock.name, 종목코드: stock.code };
 
       row.price = await fetchPrice(token, stock.code);
@@ -282,6 +232,8 @@ module.exports = async function handler(req, res) {
     const momentumScore = normalize(weightedChange, -4, 4);
     const breadthScore = breadthPct;
     const strengthScore = avgRangePos;
+    // [변경됨] 절대 변동성(20~60% 고정 기준) 대신, 최근10일/이전50일 비율(volRatio)로 계산
+    // ratio 1.0 = 평소와 동일(중립) / 2.0 이상 = 평소보다 2배 튐(공포) / 0.5 이하 = 평소보다 훨씬 잠잠(탐욕)
     const volatilityScore = avgVolRatio !== null
       ? Math.max(0, Math.min(100, 100 - normalize(avgVolRatio, 0.5, 2.0)))
       : null;
@@ -290,18 +242,8 @@ module.exports = async function handler(req, res) {
     const scores = [momentumScore, breadthScore, strengthScore, volatilityScore, flowScore].filter(v => v !== null);
     const finalScore = scores.reduce((a, b) => a + b, 0) / scores.length;
 
-    // 섹터별 결과도 Redis에 저장해두면, 나중에 사이트 페이지에서 매번 API 재조회 없이 바로 불러다 쓸 수 있어요
-    await kvSetSimple(`feargreed:sector:${sectorKey}`, {
-      date: todayStr(),
-      score: Math.round(finalScore),
-      label: sector.label,
-      updatedAt: new Date().toISOString(),
-    });
-
     return res.status(200).json({
       success: true,
-      섹터: sector.label,
-      섹터코드: sectorKey,
       timestamp: new Date().toISOString(),
       note: '이 화면 전체를 복사해서 Claude에게 붙여넣어 주세요.',
       summary: {
