@@ -284,6 +284,11 @@ module.exports = async function handler(req, res) {
       details: results,
     });
   } catch (e) {
-    return res.status(500).json({ success: false, error: e.message });
+    return res.status(500).json({
+      success: false,
+      error: e.message,
+      cause: e.cause ? (e.cause.message || String(e.cause)) : null,
+      stack: e.stack ? e.stack.split('\n').slice(0, 5) : null
+    });
   }
 };
