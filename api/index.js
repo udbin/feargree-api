@@ -9,6 +9,58 @@ const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
 let kisToken = null;
 let kisTokenExpiry = 0;
 
+// [신규] IP별 속도 제한 — 차단이 아니라 "너무 잦은 요청이면 잠깐 쉬어가게" 하는 목적
+const BOT_WHITELIST = [
+  'googlebot', 'mediapartners-google', 'adsbot-google', // 구글 검색·애드센스 크롤러 (반드시 예외)
+  'bingbot', 'yeti', 'daumoa', // 빙, 네이버, 다음 검색봇
+];
+const RATE_LIMIT_WINDOW_MS = 10000; // 10초 window
+const RATE_LIMIT_MAX = 5;           // 10초 안에 5회 초과 시 제한
+
+function isWhitelistedBot(userAgent) {
+  if (!userAgent) return false;
+  const ua = userAgent.toLowerCase();
+  return BOT_WHITELIST.some(bot => ua.includes(bot));
+}
+
+function getClientIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (xff) return xff.split(',')[0].trim();
+  return req.socket && req.socket.remoteAddress || 'unknown';
+}
+
+async function checkRateLimit(req) {
+  // cron-close.js 등 내부 호출은 비밀 헤더로 무조건 통과
+  if (process.env.INTERNAL_CALL_SECRET && req.headers['x-internal-secret'] === process.env.INTERNAL_CALL_SECRET) {
+    return { limited: false };
+  }
+  // 알려진 검색엔진/애드센스 봇은 무조건 통과
+  if (isWhitelistedBot(req.headers['user-agent'])) {
+    return { limited: false };
+  }
+
+  const ip = getClientIp(req);
+  const key = `feargreed:ratelimit:${ip}`;
+  const now = Date.now();
+
+  try {
+    const record = await kvGet(key);
+    let timestamps = Array.isArray(record) ? record : [];
+    timestamps = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+
+    if (timestamps.length >= RATE_LIMIT_MAX) {
+      return { limited: true, retryAfterSec: Math.ceil((RATE_LIMIT_WINDOW_MS - (now - timestamps[0])) / 1000) };
+    }
+
+    timestamps.push(now);
+    await kvSet(key, timestamps);
+    return { limited: false };
+  } catch (e) {
+    console.warn('rate limit 체크 실패(허용 처리):', e.message);
+    return { limited: false }; // Redis 문제로 체크 실패 시엔 안전하게 통과시킴 (서비스 장애 방지 우선)
+  }
+}
+
 // [신규] 모든 외부(네이버/CNN/야후 등) fetch에 타임아웃을 강제한다.
 // 외부 사이트가 응답 없이 멈추면 함수가 몇 분씩 대기하며 Active CPU를 낭비하던 문제를 방지.
 async function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
@@ -148,6 +200,17 @@ module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
+  // [신규] 속도 제한 체크 — 차단이 아니라 과도한 요청 시 잠깐 대기 안내
+  const rl = await checkRateLimit(req);
+  if (rl.limited) {
+    res.setHeader('Retry-After', String(rl.retryAfterSec || 5));
+    return res.status(429).json({
+      success: false,
+      error: '요청이 너무 잦습니다. 잠시 후 다시 시도해주세요.',
+      retryAfterSec: rl.retryAfterSec || 5
+    });
+  }
+
   try {
     if (req.query && req.query.reset === '1') {
       await fetch(`${REDIS_URL}/del/feargreed:history`, {
@@ -190,6 +253,20 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ success: true, message: '히스토리 저장 완료', date, us: usScore, kr: krScore, total: history.length });
     }
 
+    // ============================================================
+    // [신규] 30초 짧은 캐싱 — 봇/새로고침 등으로 짧은 간격 반복 호출이 와도
+    // 실제 KIS·CNN 등 외부 API는 30초에 한 번만 호출하고, 그 사이는
+    // Redis에 저장된 방금 그 결과를 그대로 재사용한다. (CPU 낭비 방지)
+    // ============================================================
+    const CACHE_KEY = 'feargreed:apicache';
+    const CACHE_TTL_MS = 30000;
+    try {
+      const cached = await kvGet(CACHE_KEY);
+      if (cached && cached.timestamp && (Date.now() - new Date(cached.timestamp).getTime()) < CACHE_TTL_MS) {
+        return res.status(200).json(cached);
+      }
+    } catch (e) { console.warn('apicache 조회 실패:', e.message); }
+
     const [usData, krData] = await Promise.all([fetchUSFearGreed(), fetchKRFearGreed()]);
 
     // ============================================================
@@ -202,14 +279,19 @@ module.exports = async function handler(req, res) {
       history = await kvGet('feargreed:history') || [];
     } catch(e) { console.warn('history read fail:', e.message); history = []; }
 
-    return res.status(200).json({
+    const responsePayload = {
       success: true,
       timestamp: new Date().toISOString(),
       us: usData,
       kr: krData,
       history: history || [],
       debug: { redis_url_set: !!REDIS_URL, redis_token_set: !!REDIS_TOKEN, history_len: (history||[]).length }
-    });
+    };
+
+    try { await kvSet(CACHE_KEY, responsePayload); }
+    catch (e) { console.warn('apicache 저장 실패:', e.message); }
+
+    return res.status(200).json(responsePayload);
   } catch(error) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -364,7 +446,12 @@ async function fetchKRFearGreed() {
       kosdaq = { price: 0, change: 0, changePercent: kosdaqChg };
     }
     let vkospiVal = 20;
-    try { vkospiVal = await fetchVKOSPI(); } catch(e){ console.warn('VKOSPI all fail:', e.message); }
+    let vkospiSource = 'fallback_default';
+    try {
+      const vk = await fetchVKOSPI(token);
+      vkospiVal = vk.value;
+      vkospiSource = vk.source;
+    } catch(e){ console.warn('VKOSPI all fail:', e.message); }
 
     const volatility = Math.max(0, Math.min(100, (55 - vkospiVal) / (55 - 12) * 100));
     const momentum = normalize(kospi.changePercent, -4, 4);
@@ -406,7 +493,7 @@ async function fetchKRFearGreed() {
     return {
       score, label:getLabel(score),
       kospi_price:kospi.price.toFixed(2), kospi_change:kospi.changePercent.toFixed(2),
-      kosdaq_change:kosdaq.changePercent.toFixed(2), vkospi:vkospiVal.toFixed(2),
+      kosdaq_change:kosdaq.changePercent.toFixed(2), vkospi:vkospiVal.toFixed(2), vkospi_source:vkospiSource,
       indicators:[
         {name:'KOSPI 등락률',  value:Math.round(momentum),  raw:parseFloat(kospi.changePercent.toFixed(2)),                          unit:'%',  barMax:5  },
         {name:'KOSDAQ 등락률', value:Math.round(kosdaqScore),raw:parseFloat(kosdaq.changePercent.toFixed(2)),                         unit:'%',  barMax:5  },
@@ -426,7 +513,26 @@ async function fetchKRFearGreed() {
   }
 }
 
-async function fetchVKOSPI() {
+async function fetchVKOSPI(token) {
+  // 1순위: KIS API로 직접 조회 (지수코드 0503 = VKOSPI, idxcode.mst 확인 완료)
+  if (token) {
+    try {
+      const res = await fetchWithTimeout(
+        `${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-index-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=0503`,
+        { headers:{'Content-Type':'application/json','authorization':`Bearer ${token}`,'appkey':KIS_APP_KEY,'appsecret':KIS_APP_SECRET,'tr_id':'FHPUP02100000','custtype':'P'} },
+        6000
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const v = parseFloat(data.output && data.output.bstp_nmix_prpr);
+        if (v > 5 && v < 200) { console.log('VKOSPI KIS:', v); return { value:v, source:'kis' }; }
+      } else {
+        console.warn('VKOSPI KIS HTTP', res.status);
+      }
+    } catch(e){ console.warn('VKOSPI KIS fail:', e.message); }
+  }
+
+  // 2순위: 네이버 스크래핑
   try {
     const res = await fetchWithTimeout('https://finance.naver.com/sise/sise_index.naver?code=VKOSPI',{
       headers:{'User-Agent':'Mozilla/5.0','Accept':'text/html','Accept-Language':'ko-KR,ko;q=0.9'}
@@ -434,18 +540,16 @@ async function fetchVKOSPI() {
     if (res.ok) {
       const html = await res.text();
       const m = html.match(/id="VKOSPI_current_value"[^>]*>([\d.]+)/)||html.match(/class="num_total"[^>]*>\s*([\d.]+)/)||html.match(/"now":\s*"([\d.]+)"/);
-      if (m) { const v=parseFloat(m[1]); if(v>5&&v<200){console.log('VKOSPI naver:',v);return v;} }
+      if (m) { const v=parseFloat(m[1]); if(v>5&&v<200){console.log('VKOSPI naver:',v);return { value:v, source:'naver' };} }
     }
   } catch(e){ console.warn('VKOSPI naver fail:', e.message); }
-  try {
-    const vk = await fetchYahoo('^VKOSPI');
-    if(vk.price>5&&vk.price<200){console.log('VKOSPI yahoo:',vk.price);return vk.price;}
-  } catch(e){ console.warn('VKOSPI yahoo fail:', e.message); }
+
+  // 3순위: VIX 기반 추정 (정확도 낮음 - source:'estimated'로 추적)
   try {
     const vix = await fetchYahoo('^VIX');
     const est = Math.min(150,vix.price*1.4);
     console.log('VKOSPI estimated:',est);
-    return est;
+    return { value:est, source:'estimated' };
   } catch(e){}
   throw new Error('VKOSPI all sources failed');
 }
