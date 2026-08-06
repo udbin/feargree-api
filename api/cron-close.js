@@ -99,7 +99,9 @@ module.exports = async function handler(req, res) {
     // ============================================================
     let historyResult = 'skipped';
     try {
-      const scoreRes = await fetch('https://feargree-api.vercel.app/api');
+      const scoreRes = await fetch('https://feargree-api.vercel.app/api', {
+        headers: process.env.INTERNAL_CALL_SECRET ? { 'x-internal-secret': process.env.INTERNAL_CALL_SECRET } : {}
+      });
       const scoreData = await scoreRes.json();
       if (scoreData && scoreData.success) {
         await saveHistoryEntry(scoreData.us.score, scoreData.kr.score);
