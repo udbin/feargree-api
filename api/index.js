@@ -514,25 +514,15 @@ async function fetchKRFearGreed() {
 }
 
 async function fetchVKOSPI(token) {
-  // 1순위: KIS API로 직접 조회 (지수코드 0503 = VKOSPI, idxcode.mst 확인 완료)
-  if (token) {
-    try {
-      const res = await fetchWithTimeout(
-        `${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-index-price?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=0503`,
-        { headers:{'Content-Type':'application/json','authorization':`Bearer ${token}`,'appkey':KIS_APP_KEY,'appsecret':KIS_APP_SECRET,'tr_id':'FHPUP02100000','custtype':'P'} },
-        6000
-      );
-      if (res.ok) {
-        const data = await res.json();
-        const v = parseFloat(data.output && data.output.bstp_nmix_prpr);
-        if (v > 5 && v < 200) { console.log('VKOSPI KIS:', v); return { value:v, source:'kis' }; }
-      } else {
-        console.warn('VKOSPI KIS HTTP', res.status);
-      }
-    } catch(e){ console.warn('VKOSPI KIS fail:', e.message); }
-  }
+  // ============================================================
+  // [비활성화] KIS 지수코드 0503 시도 결과, 실제 VKOSPI(약 22)가 아닌
+  // 엉뚱한 값(76점대)이 반환되거나 HTTP 500이 발생함을 확인.
+  // idxcode.mst 상 '00503=VKOSPI'가 맞지만, API 파라미터 변환(자릿수/시장구분)
+  // 방식이 아직 검증 안 됨. 잘못된 값을 "성공"으로 오인하는 게 더 위험하므로
+  // 정확한 파라미터 확인 전까지는 이 경로를 끄고 기존 네이버 방식을 우선 사용.
+  // ============================================================
 
-  // 2순위: 네이버 스크래핑
+  // 1순위: 네이버 스크래핑
   try {
     const res = await fetchWithTimeout('https://finance.naver.com/sise/sise_index.naver?code=VKOSPI',{
       headers:{'User-Agent':'Mozilla/5.0','Accept':'text/html','Accept-Language':'ko-KR,ko;q=0.9'}
@@ -544,7 +534,7 @@ async function fetchVKOSPI(token) {
     }
   } catch(e){ console.warn('VKOSPI naver fail:', e.message); }
 
-  // 3순위: VIX 기반 추정 (정확도 낮음 - source:'estimated'로 추적)
+  // 2순위: VIX 기반 추정 (정확도 낮음 - source:'estimated'로 추적)
   try {
     const vix = await fetchYahoo('^VIX');
     const est = Math.min(150,vix.price*1.4);
