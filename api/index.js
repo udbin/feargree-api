@@ -262,23 +262,10 @@ module.exports = async function handler(req, res) {
     const CACHE_TTL_MS = 30000;
     try {
       const cached = await kvGet(CACHE_KEY);
-      // ============================================================
-      // [임시 디버그] 캐시가 왜 계속 미스나는지 원인 확인용 로그.
-      // 원인 확인 후에는 이 블록을 삭제해도 됨.
-      // ============================================================
-      console.log('CACHE DEBUG type:', typeof cached,
-        '| isNull:', cached === null,
-        '| hasTimestamp:', !!(cached && cached.timestamp),
-        '| timestamp:', cached && cached.timestamp,
-        '| ageMs:', cached && cached.timestamp ? (Date.now() - new Date(cached.timestamp).getTime()) : 'n/a',
-        '| keys:', cached && typeof cached === 'object' ? Object.keys(cached).join(',') : 'n/a'
-      );
       if (cached && cached.timestamp && (Date.now() - new Date(cached.timestamp).getTime()) < CACHE_TTL_MS) {
-        console.log('CACHE DEBUG: HIT, returning cached response');
         return res.status(200).json(cached);
       }
-      console.log('CACHE DEBUG: MISS, proceeding to fetch fresh data');
-    } catch (e) { console.warn('apicache 조회 실패:', e.message, e.stack); }
+    } catch (e) { console.warn('apicache 조회 실패:', e.message); }
 
     const [usData, krData] = await Promise.all([fetchUSFearGreed(), fetchKRFearGreed()]);
 
@@ -301,11 +288,8 @@ module.exports = async function handler(req, res) {
       debug: { redis_url_set: !!REDIS_URL, redis_token_set: !!REDIS_TOKEN, history_len: (history||[]).length }
     };
 
-    try {
-      await kvSet(CACHE_KEY, responsePayload);
-      console.log('CACHE DEBUG: saved fresh payload, timestamp:', responsePayload.timestamp);
-    }
-    catch (e) { console.warn('apicache 저장 실패:', e.message, e.stack); }
+    try { await kvSet(CACHE_KEY, responsePayload); }
+    catch (e) { console.warn('apicache 저장 실패:', e.message); }
 
     return res.status(200).json(responsePayload);
   } catch(error) {
