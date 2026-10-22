@@ -284,6 +284,7 @@ module.exports = async function handler(req, res) {
       timestamp: new Date().toISOString(),
       us: usData,
       kr: krData,
+      indices: buildIndices(krData), // [신규] 사이트 상단 코스피·코스닥 지수 바용
       history: history || [],
       debug: { redis_url_set: !!REDIS_URL, redis_token_set: !!REDIS_TOKEN, history_len: (history||[]).length }
     };
@@ -494,6 +495,9 @@ async function fetchKRFearGreed() {
       score, label:getLabel(score),
       kospi_price:kospi.price.toFixed(2), kospi_change:kospi.changePercent.toFixed(2),
       kosdaq_change:kosdaq.changePercent.toFixed(2), vkospi:vkospiVal.toFixed(2), vkospi_source:vkospiSource,
+      // [신규] 지수 바 표시용 — 코스닥 현재가, 전일 대비 포인트
+      kosdaq_price:kosdaq.price.toFixed(2),
+      kospi_point:(kospi.change||0).toFixed(2), kosdaq_point:(kosdaq.change||0).toFixed(2),
       indicators:[
         {name:'KOSPI 등락률',  value:Math.round(momentum),  raw:parseFloat(kospi.changePercent.toFixed(2)),                          unit:'%',  barMax:5  },
         {name:'KOSDAQ 등락률', value:Math.round(kosdaqScore),raw:parseFloat(kosdaq.changePercent.toFixed(2)),                         unit:'%',  barMax:5  },
@@ -542,6 +546,25 @@ async function fetchVKOSPI(token) {
     return { value:est, source:'estimated' };
   } catch(e){}
   throw new Error('VKOSPI all sources failed');
+}
+
+// ============================================================
+// [신규] 사이트 상단 지수 바(코스피·코스닥)용 데이터
+// 프론트(index.html renderMarketIndex)가 기대하는 형태:
+//   { kospi: { value, change, changePct }, kosdaq: { ... }, marketOpen }
+// KIS 실패로 현재가가 0이면 해당 항목은 null → 프론트가 예비 데이터로 전환
+// ============================================================
+function buildIndices(kr) {
+  if (!kr) return null;
+  const item = (name, price, point, pct) => {
+    const value = Number(price);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return { name, value, change: Number(point) || 0, changePct: Number(pct) || 0 };
+  };
+  const kospi  = item('코스피', kr.kospi_price,  kr.kospi_point,  kr.kospi_change);
+  const kosdaq = item('코스닥', kr.kosdaq_price, kr.kosdaq_point, kr.kosdaq_change);
+  if (!kospi && !kosdaq) return null;
+  return { kospi, kosdaq, marketOpen: isMarketOpen() };
 }
 
 function isMarketOpen() {
