@@ -499,11 +499,11 @@ async function fetchKRFearGreed() {
       kosdaq_price:kosdaq.price.toFixed(2),
       kospi_point:(kospi.change||0).toFixed(2), kosdaq_point:(kosdaq.change||0).toFixed(2),
       indicators:[
-        {name:'KOSPI 등락률',  value:Math.round(momentum),  raw:parseFloat(kospi.changePercent.toFixed(2)),                          unit:'%',  barMax:5  },
-        {name:'KOSDAQ 등락률', value:Math.round(kosdaqScore),raw:parseFloat(kosdaq.changePercent.toFixed(2)),                         unit:'%',  barMax:5  },
-        {name:'주가 강도',     value:Math.round(strength),  raw:parseFloat(((kospi.changePercent+kosdaq.changePercent)/2).toFixed(2)),unit:'%',  barMax:5  },
-        {name:'위험자산 선호도', value:Math.round(safeHaven), raw:parseFloat(safeHavenSpread.toFixed(2)),                               unit:'%p', barMax:10 },
-        {name:'KOSPI 추세',    value:Math.round(trend),     raw:parseFloat(kospi.changePercent.toFixed(2)),                          unit:'%',  barMax:5  },
+        {name:'KOSPI 등락률',  value:Math.round(momentum),  raw:parseFloat(kospi.changePercent.toFixed(2)),                          unit:'%',  barMax:10 },
+        {name:'KOSDAQ 등락률', value:Math.round(kosdaqScore),raw:parseFloat(kosdaq.changePercent.toFixed(2)),                         unit:'%',  barMax:10 },
+        {name:'주가 강도',     value:Math.round(strength),  raw:parseFloat(((kospi.changePercent+kosdaq.changePercent)/2).toFixed(2)),unit:'%',  barMax:10 },
+        {name:'위험자산 선호도', value:Math.round(safeHaven), raw:parseFloat(safeHavenSpread.toFixed(2)),                               unit:'%p', barMax:30 },
+        {name:'KOSPI 추세',    value:Math.round(trend),     raw:Math.round(trend),                                                   unit:'',   barMax:100},
         {name:'변동성 (VKOSPI)',value:Math.round(volatility),raw:parseFloat(vkospiVal.toFixed(1)),                                   unit:'',   barMax:80 },
         {name:'종합 심리',     value:Math.round(sentiment), raw:Math.round(sentiment),                                               unit:'',   barMax:100}
       ],
